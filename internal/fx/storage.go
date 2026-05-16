@@ -1,0 +1,55 @@
+package appfx
+
+import (
+	"context"
+
+	"payment-service/config"
+	rdb "payment-service/pkg/storage/redis"
+	ydb "payment-service/pkg/storage/yugabyte"
+
+	"github.com/jmoiron/sqlx"
+	"github.com/ofm-microservices/ofm-common/pkg/logging"
+	"github.com/redis/go-redis/v9"
+	"go.uber.org/fx"
+)
+
+// StorageModule wires the payment-service database, Redis read-model store,
+// and migrations into the FX graph.
+var StorageModule = fx.Options(
+	fx.Invoke(InvokeRunMigrations),
+	fx.Provide(ProvideYugaByteDB, ProvideRedisClient),
+)
+
+// InvokeRunMigrations applies the payment-service write-model migrations.
+func InvokeRunMigrations(cfg *config.Config, lg logging.Logger) error {
+	if err := ydb.RunMigrations(cfg.DB); err != nil {
+		lg.Error("run migrations failed", logging.Err(err))
+		return err
+	}
+	lg.Info("migrations applied")
+	return nil
+}
+
+// ProvideYugaByteDB opens the YugabyteDB connection owned by payment-service.
+func ProvideYugaByteDB(lc fx.Lifecycle, cfg *config.Config, lg logging.Logger) (*sqlx.DB, error) {
+	dbx, err := ydb.Open(cfg.DB)
+	if err != nil {
+		lg.Error("open database failed", logging.Err(err))
+		return nil, err
+	}
+	lg.Info("database connected")
+	lc.Append(fx.Hook{OnStop: func(context.Context) error { dbx.Close(); return nil }})
+	return dbx, nil
+}
+
+// ProvideRedisClient opens the Redis client used for the payment read model.
+func ProvideRedisClient(lc fx.Lifecycle, cfg *config.Config, lg logging.Logger) (*redis.Client, error) {
+	client, err := rdb.Open(context.Background(), cfg.Redis)
+	if err != nil {
+		lg.Error("open redis failed", logging.Err(err))
+		return nil, err
+	}
+	lg.Info("redis connected")
+	lc.Append(fx.Hook{OnStop: func(context.Context) error { return client.Close() }})
+	return client, nil
+}
