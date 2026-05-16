@@ -248,6 +248,23 @@ func (s *service) StartFreelancerOnboarding(ctx context.Context, cmd StartFreela
 	}, nil
 }
 
+func (s *service) GetConnectStatus(ctx context.Context, userID string) (*GetConnectStatusResult, error) {
+	if strings.TrimSpace(userID) == "" {
+		return nil, domain.ErrInvalidID
+	}
+	account, err := s.accounts.GetByUserID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	return &GetConnectStatusResult{
+		UserID:          account.UserID,
+		StripeAccountID: account.StripeAccountID,
+		Status:          account.Status,
+		DisabledReason:  account.DisabledReason,
+		OccurredAt:      time.Now().UTC().Format(time.RFC3339Nano),
+	}, nil
+}
+
 func (s *service) HandleConnectWebhook(ctx context.Context, evt ConnectWebhookCommand) error {
 	log := logging.WithContext(ctx, s.log)
 	if exists, _ := s.webhooks.Exists(ctx, evt.EventID); exists {

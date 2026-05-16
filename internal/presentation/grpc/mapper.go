@@ -34,3 +34,13 @@ func (m *mapper) ToStartFreelancerOnboardingResponse(res *app.StartFreelancerOnb
 		OccurredAt:       res.OccurredAt,
 	}
 }
+
+func (m *mapper) ToGetConnectStatusResponse(res *app.GetConnectStatusResult) *paymentconnectv1.GetConnectStatusResponse {
+	return &paymentconnectv1.GetConnectStatusResponse{
+		UserId:          res.UserID,
+		Status:          res.Status,
+		StripeAccountId: res.StripeAccountID,
+		DisabledReason:  res.DisabledReason,
+		OccurredAt:      res.OccurredAt,
+	}
+}

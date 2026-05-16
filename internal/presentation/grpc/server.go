@@ -89,3 +89,20 @@ func (s *server) StartFreelancerOnboarding(ctx context.Context, req *paymentconn
 	}
 	return s.mapr.ToStartFreelancerOnboardingResponse(res), nil
 }
+
+// GetConnectStatus returns the current Connect onboarding state for one user.
+func (s *server) GetConnectStatus(ctx context.Context, req *paymentconnectv1.GetConnectStatusRequest) (*paymentconnectv1.GetConnectStatusResponse, error) {
+	started := time.Now()
+	log := logging.WithContext(ctx, s.log)
+	res, err := s.svc.GetConnectStatus(ctx, req.GetUserId())
+	if err != nil {
+		log.Error("get connect status failed",
+			logging.Operation("grpc.payment.get_connect_status"),
+			logging.DurationMS(time.Since(started)),
+			logging.String("user_id", req.GetUserId()),
+			logging.Err(err),
+		)
+		return nil, err
+	}
+	return s.mapr.ToGetConnectStatusResponse(res), nil
+}
