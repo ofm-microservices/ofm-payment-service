@@ -12,6 +12,7 @@ type Service interface {
 	CreateIntent(ctx context.Context, cmd CreateIntentCommand) (*CreateIntentResult, error)
 	HandleWebhook(ctx context.Context, evt WebhookCommand) error
 	StartFreelancerOnboarding(ctx context.Context, cmd StartFreelancerOnboardingCommand) (*StartFreelancerOnboardingResult, error)
+	GetConnectStatus(ctx context.Context, userID string) (*GetConnectStatusResult, error)
 	HandleConnectWebhook(ctx context.Context, evt ConnectWebhookCommand) error
 }
 
@@ -107,6 +108,16 @@ type StartFreelancerOnboardingResult struct {
 	PayoutsEnabled   bool   `json:"payouts_enabled"`
 	DisabledReason   string `json:"disabled_reason,omitempty"`
 	OccurredAt       string `json:"occurred_at"`
+}
+
+// GetConnectStatusResult reports the current Stripe Connect onboarding status
+// for one freelancer.
+type GetConnectStatusResult struct {
+	UserID          string `json:"user_id"`
+	StripeAccountID string `json:"stripe_account_id"`
+	Status          string `json:"status"`
+	DisabledReason  string `json:"disabled_reason,omitempty"`
+	OccurredAt      string `json:"occurred_at"`
 }
 
 // ConnectWebhookCommand is the normalized Stripe Connect webhook input.
