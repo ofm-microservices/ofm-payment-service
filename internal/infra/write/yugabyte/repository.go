@@ -41,6 +41,18 @@ const getPaymentIntentByIDQuery = `
 SELECT payment_intent_id, order_id, provider, provider_intent_id, checkout_url, amount_cents, currency, status, created_at, updated_at
 FROM payment_intents WHERE payment_intent_id = $1`
 
+const getPaymentIntentByOrderIDQuery = `
+SELECT payment_intent_id, order_id, provider, provider_intent_id, checkout_url, amount_cents, currency, status, created_at, updated_at
+FROM payment_intents WHERE order_id = $1`
+
+const updatePaymentIntentFromWebhookByOrderIDQuery = `
+UPDATE payment_intents
+SET provider_intent_id = $2,
+    status = $3,
+    updated_at = NOW()
+WHERE order_id = $1
+RETURNING payment_intent_id, order_id, provider, provider_intent_id, checkout_url, amount_cents, currency, status, created_at, updated_at`
+
 const updatePaymentIntentStatusQuery = `UPDATE payment_intents SET status = $2, updated_at = NOW() WHERE payment_intent_id = $1`
 
 const updatePaymentIntentCheckoutURLQuery = `UPDATE payment_intents SET checkout_url = $2, updated_at = NOW() WHERE payment_intent_id = $1`
@@ -106,6 +118,69 @@ func (r *repo) GetByID(ctx context.Context, intentID string) (*domain.PaymentInt
 			logging.Err(err),
 		)
 		return nil, r.translator.TranslateFindPaymentIntentError(err)
+	}
+	return &domain.PaymentIntent{
+		IntentID: row.IntentID, OrderID: row.OrderID, Provider: row.Provider,
+		ProviderIntentID: row.ProviderIntentID, CheckoutURL: row.CheckoutURL,
+		AmountCents: row.AmountCents, Currency: row.Currency, Status: row.Status,
+		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
+	}, nil
+}
+
+func (r *repo) GetByOrderID(ctx context.Context, orderID string) (*domain.PaymentIntent, error) {
+	started := time.Now()
+	status := "success"
+	defer func() {
+		metrics.Global().ObserveDB("yugabyte", "get_by_order_id", "payment_intents", status, time.Since(started))
+	}()
+
+	var row model.PaymentIntentRow
+	if err := r.db.QueryRowContext(ctx, getPaymentIntentByOrderIDQuery, orderID).Scan(
+		&row.IntentID, &row.OrderID, &row.Provider, &row.ProviderIntentID, &row.CheckoutURL,
+		&row.AmountCents, &row.Currency, &row.Status, &row.CreatedAt, &row.UpdatedAt,
+	); err != nil {
+		status = "error"
+		r.log.Error("get payment intent by order id failed",
+			logging.Operation("db.payment.get_by_order_id"),
+			logging.Attempt(1),
+			logging.Retryable(false),
+			logging.DurationMS(time.Since(started)),
+			logging.String("order_id", orderID),
+			logging.Err(err),
+		)
+		return nil, r.translator.TranslateFindPaymentIntentError(err)
+	}
+	return &domain.PaymentIntent{
+		IntentID: row.IntentID, OrderID: row.OrderID, Provider: row.Provider,
+		ProviderIntentID: row.ProviderIntentID, CheckoutURL: row.CheckoutURL,
+		AmountCents: row.AmountCents, Currency: row.Currency, Status: row.Status,
+		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
+	}, nil
+}
+
+func (r *repo) UpdateWebhookPaymentIntent(ctx context.Context, orderID, providerIntentID, statusValue string) (*domain.PaymentIntent, error) {
+	started := time.Now()
+	status := "success"
+	defer func() {
+		metrics.Global().ObserveDB("yugabyte", "update_webhook_payment_intent", "payment_intents", status, time.Since(started))
+	}()
+
+	var row model.PaymentIntentRow
+	if err := r.db.QueryRowContext(ctx, updatePaymentIntentFromWebhookByOrderIDQuery, orderID, providerIntentID, statusValue).Scan(
+		&row.IntentID, &row.OrderID, &row.Provider, &row.ProviderIntentID, &row.CheckoutURL,
+		&row.AmountCents, &row.Currency, &row.Status, &row.CreatedAt, &row.UpdatedAt,
+	); err != nil {
+		status = "error"
+		r.log.Error("update payment intent from webhook failed",
+			logging.Operation("db.payment.update_webhook_payment_intent"),
+			logging.Attempt(1),
+			logging.Retryable(false),
+			logging.DurationMS(time.Since(started)),
+			logging.String("order_id", orderID),
+			logging.String("provider_intent_id", providerIntentID),
+			logging.Err(err),
+		)
+		return nil, r.translator.TranslateUpdatePaymentIntentError(err)
 	}
 	return &domain.PaymentIntent{
 		IntentID: row.IntentID, OrderID: row.OrderID, Provider: row.Provider,

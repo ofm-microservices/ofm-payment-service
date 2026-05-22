@@ -3,7 +3,6 @@ package application
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
@@ -12,6 +11,7 @@ import (
 	"github.com/ofm-microservices/ofm-common/pkg/logging"
 	paymentflowv1 "github.com/ofm-microservices/ofm-common/proto/paymentflow/v1"
 	"github.com/stripe/stripe-go/v85"
+	checkoutsession "github.com/stripe/stripe-go/v85/checkout/session"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -66,20 +66,76 @@ func (s *service) CreateIntent(ctx context.Context, cmd CreateIntentCommand) (*C
 	if _, err := s.intents.Create(ctx, intent); err != nil {
 		return nil, err
 	}
-	_ = s.read.Upsert(ctx, &intent)
+	session, err := checkoutsession.New(&stripe.CheckoutSessionParams{
+		Mode:              stripe.String(string(stripe.CheckoutSessionModePayment)),
+		SuccessURL:        stripe.String("http://localhost:3000/orders/checkout/success?session_id={CHECKOUT_SESSION_ID}"),
+		CancelURL:         stripe.String("http://localhost:3000/orders/checkout/cancel?session_id={CHECKOUT_SESSION_ID}"),
+		ClientReferenceID: stripe.String(cmd.OrderID),
+		CustomerCreation:  stripe.String(string(stripe.CheckoutSessionCustomerCreationAlways)),
+		PaymentMethodTypes: []*string{
+			stripe.String("card"),
+		},
+		LineItems: []*stripe.CheckoutSessionLineItemParams{
+			{
+				Quantity: stripe.Int64(1),
+				PriceData: &stripe.CheckoutSessionLineItemPriceDataParams{
+					Currency:   stripe.String(strings.ToLower(strings.TrimSpace(cmd.Currency))),
+					UnitAmount: stripe.Int64(cmd.AmountCents),
+					ProductData: &stripe.CheckoutSessionLineItemPriceDataProductDataParams{
+						Name:        stripe.String(cmd.OrderID),
+						Description: stripe.String("OFM order checkout"),
+						Metadata: map[string]string{
+							"order_id": cmd.OrderID,
+							"saga_id":  cmd.SagaID,
+						},
+					},
+				},
+			},
+		},
+		Metadata: map[string]string{
+			"order_id": cmd.OrderID,
+			"saga_id":  cmd.SagaID,
+		},
+		PaymentIntentData: &stripe.CheckoutSessionPaymentIntentDataParams{
+			Metadata: map[string]string{
+				"order_id": cmd.OrderID,
+				"saga_id":  cmd.SagaID,
+			},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if session == nil {
+		return nil, errors.New("stripe checkout session not created")
+	}
+	intent.CheckoutURL = session.URL
+	intent.ProviderIntentID = session.ID
+	_ = s.intents.UpdateCheckoutURL(ctx, intent.IntentID, intent.CheckoutURL)
+	_ = s.intents.UpdateStatus(ctx, intent.IntentID, domain.PaymentStatusIntentCreated)
+	if created, err := s.intents.GetByID(ctx, intent.IntentID); err == nil {
+		created.CheckoutURL = intent.CheckoutURL
+		created.ProviderIntentID = intent.ProviderIntentID
+		created.Status = domain.PaymentStatusIntentCreated
+		_ = s.read.Upsert(ctx, created)
+	}
 	res := &CreateIntentResult{
-		IntentID:   cmd.IntentID,
-		SagaID:     cmd.SagaID,
-		OrderID:    cmd.OrderID,
-		Status:     domain.PaymentStatusPending,
-		OccurredAt: now.Format(time.RFC3339Nano),
+		IntentID:         cmd.IntentID,
+		SagaID:           cmd.SagaID,
+		OrderID:          cmd.OrderID,
+		ProviderIntentID: session.ID,
+		CheckoutURL:      session.URL,
+		Status:           domain.PaymentStatusIntentCreated,
+		OccurredAt:       now.Format(time.RFC3339Nano),
 	}
 	payload, err := protojson.Marshal(&paymentflowv1.PaymentIntentResult{
-		SagaId:          cmd.SagaID,
-		OrderId:         cmd.OrderID,
-		PaymentIntentId: cmd.IntentID,
-		Status:          domain.PaymentStatusPending,
-		OccurredAt:      now.Format(time.RFC3339Nano),
+		SagaId:           cmd.SagaID,
+		OrderId:          cmd.OrderID,
+		PaymentIntentId:  cmd.IntentID,
+		CheckoutUrl:      session.URL,
+		ProviderIntentId: session.ID,
+		Status:           domain.PaymentStatusIntentCreated,
+		OccurredAt:       now.Format(time.RFC3339Nano),
 	})
 	if err == nil {
 		_ = s.broker.Publish(ctx, "payment.intent.result", payload)
@@ -91,6 +147,15 @@ func (s *service) HandleWebhook(ctx context.Context, evt WebhookCommand) error {
 	if exists, _ := s.webhooks.Exists(ctx, evt.EventID); exists {
 		return nil
 	}
+	if evt.OrderID == "" {
+		return errors.New("missing order id in payment webhook")
+	}
+	intent, err := s.intents.UpdateWebhookPaymentIntent(ctx, evt.OrderID, evt.ProviderIntentID, evt.Status)
+	if err != nil {
+		return err
+	}
+	evt.IntentID = intent.IntentID
+	evt.OrderID = intent.OrderID
 	if _, err := s.webhooks.Create(ctx, domain.WebhookEvent{
 		EventID:   evt.EventID,
 		Provider:  evt.Provider,
@@ -102,43 +167,29 @@ func (s *service) HandleWebhook(ctx context.Context, evt WebhookCommand) error {
 	}); err != nil {
 		return err
 	}
-	if intent, err := s.intents.GetByID(ctx, evt.IntentID); err == nil {
-		intent.Status = evt.Status
-		intent.UpdatedAt = time.Now().UTC()
-		_ = s.read.Upsert(ctx, intent)
-	}
-	payload, err := protojson.Marshal(&paymentflowv1.PaymentStatusEvent{
-		SagaId:          evt.SagaID,
-		OrderId:         evt.OrderID,
-		PaymentIntentId: evt.IntentID,
-		Status:          evt.Status,
-		OccurredAt:      time.Now().UTC().Format(time.RFC3339Nano),
-	})
-	if err != nil {
-		return fmt.Errorf("marshal payment status event: %w", err)
-	}
-	if err := s.broker.Publish(ctx, "payment.status", payload); err != nil {
-		return err
-	}
+	intent.ProviderIntentID = evt.ProviderIntentID
+	intent.Status = evt.Status
+	intent.UpdatedAt = time.Now().UTC()
+	_ = s.read.Upsert(ctx, intent)
 	switch evt.Status {
 	case domain.PaymentStatusCaptured:
 		completed, _ := protojson.Marshal(&paymentflowv1.PaymentStatusEvent{
 			SagaId:          evt.SagaID,
 			OrderId:         evt.OrderID,
 			PaymentIntentId: evt.IntentID,
-			Status:          "completed",
+			Status:          "payment.order_payment_succeeded",
 			OccurredAt:      time.Now().UTC().Format(time.RFC3339Nano),
 		})
-		return s.broker.Publish(ctx, "payment.completed", completed)
+		return s.broker.Publish(ctx, "payment.order_payment_succeeded", completed)
 	case domain.PaymentStatusFailed:
 		failed, _ := protojson.Marshal(&paymentflowv1.PaymentStatusEvent{
 			SagaId:          evt.SagaID,
 			OrderId:         evt.OrderID,
 			PaymentIntentId: evt.IntentID,
-			Status:          "failed",
+			Status:          "payment.order_payment_failed",
 			OccurredAt:      time.Now().UTC().Format(time.RFC3339Nano),
 		})
-		return s.broker.Publish(ctx, "payment.failed", failed)
+		return s.broker.Publish(ctx, "payment.order_payment_failed", failed)
 	default:
 		return nil
 	}

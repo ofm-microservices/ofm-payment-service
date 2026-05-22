@@ -60,7 +60,7 @@ func EnsureStream(cfg config.NATSConfig, log logging.Logger) error {
 	}
 	events := &nats.StreamConfig{
 		Name:      cfg.PaymentEventsStream,
-		Subjects:  []string{cfg.PaymentIntentResultSubject, cfg.PaymentStatusSubject, cfg.PaymentCompletedSubject, cfg.PaymentFailedSubject},
+		Subjects:  []string{cfg.PaymentIntentResultSubject, cfg.PaymentSucceededSubject, cfg.PaymentFailedSubject},
 		Storage:   nats.FileStorage,
 		Retention: nats.LimitsPolicy,
 		Replicas:  1,
