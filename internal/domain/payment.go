@@ -91,6 +91,8 @@ type ConnectAccountRepository interface {
 type PaymentIntentRepository interface {
 	Create(ctx context.Context, intent PaymentIntent) (*PaymentIntent, error)
 	GetByID(ctx context.Context, intentID string) (*PaymentIntent, error)
+	GetByOrderID(ctx context.Context, orderID string) (*PaymentIntent, error)
+	UpdateWebhookPaymentIntent(ctx context.Context, orderID, providerIntentID, status string) (*PaymentIntent, error)
 	UpdateStatus(ctx context.Context, intentID, status string) error
 	UpdateCheckoutURL(ctx context.Context, intentID, checkoutURL string) error
 }

@@ -9,8 +9,10 @@ import (
 	"payment-service/config"
 	app "payment-service/internal/application"
 
+	"github.com/google/uuid"
 	"github.com/ofm-microservices/ofm-common/pkg/logging"
 	"github.com/ofm-microservices/ofm-common/pkg/observability/metrics"
+	paymentcheckoutv1 "github.com/ofm-microservices/ofm-common/proto/paymentcheckout/v1"
 	paymentconnectv1 "github.com/ofm-microservices/ofm-common/proto/paymentconnect/v1"
 	otelgrpc "go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	grpcpkg "google.golang.org/grpc"
@@ -18,6 +20,7 @@ import (
 
 type server struct {
 	paymentconnectv1.UnimplementedPaymentOnboardingServiceServer
+	paymentcheckoutv1.UnimplementedPaymentCheckoutServiceServer
 	svc      app.Service
 	cfg      config.GRPCConfig
 	log      logging.Logger
@@ -46,6 +49,7 @@ func NewServer(svc app.Service, cfg config.GRPCConfig, log logging.Logger) (Serv
 		mapr: newMapper(),
 	}
 	paymentconnectv1.RegisterPaymentOnboardingServiceServer(grpcSrv, s)
+	paymentcheckoutv1.RegisterPaymentCheckoutServiceServer(grpcSrv, s)
 	return s, nil
 }
 
@@ -105,4 +109,37 @@ func (s *server) GetConnectStatus(ctx context.Context, req *paymentconnectv1.Get
 		return nil, err
 	}
 	return s.mapr.ToGetConnectStatusResponse(res), nil
+}
+
+// CreateCheckoutSession creates a platform-held checkout session for an order.
+func (s *server) CreateCheckoutSession(ctx context.Context, req *paymentcheckoutv1.CreateCheckoutSessionRequest) (*paymentcheckoutv1.CreateCheckoutSessionResponse, error) {
+	started := time.Now()
+	log := logging.WithContext(ctx, s.log)
+	res, err := s.svc.CreateIntent(ctx, app.CreateIntentCommand{
+		IntentID:       uuid.NewString(),
+		SagaID:         req.GetSagaId(),
+		OrderID:        req.GetOrderId(),
+		AmountCents:    req.GetAmountCents(),
+		Currency:       req.GetCurrency(),
+		Provider:       "stripe",
+		IdempotencyKey: req.GetIdempotencyKey(),
+		RequestedAt:    req.GetRequestedAt(),
+	})
+	if err != nil {
+		log.Error("create checkout session failed",
+			logging.Operation("grpc.payment.create_checkout_session"),
+			logging.DurationMS(time.Since(started)),
+			logging.String("order_id", req.GetOrderId()),
+			logging.Err(err),
+		)
+		return nil, err
+	}
+	return &paymentcheckoutv1.CreateCheckoutSessionResponse{
+		OrderId:               req.GetOrderId(),
+		PaymentId:             res.IntentID,
+		CheckoutUrl:           res.CheckoutURL,
+		StripePaymentIntentId: res.ProviderIntentID,
+		Status:                res.Status,
+		OccurredAt:            res.OccurredAt,
+	}, nil
 }

@@ -13,9 +13,8 @@ type NATSConfig struct {
 	PaymentIntentSubject       string `env:"NATS_SUBJECT_PAYMENT_INTENT" envDefault:"payment.intent"`
 	PaymentIntentResultSubject string `env:"NATS_SUBJECT_PAYMENT_INTENT_RESULT" envDefault:"payment.intent.result"`
 	PaymentWebhookSubject      string `env:"NATS_SUBJECT_PAYMENT_WEBHOOK" envDefault:"payment.webhook"`
-	PaymentStatusSubject       string `env:"NATS_SUBJECT_PAYMENT_STATUS" envDefault:"payment.status"`
-	PaymentCompletedSubject    string `env:"NATS_SUBJECT_PAYMENT_COMPLETED" envDefault:"payment.completed"`
-	PaymentFailedSubject       string `env:"NATS_SUBJECT_PAYMENT_FAILED" envDefault:"payment.failed"`
+	PaymentSucceededSubject    string `env:"NATS_SUBJECT_PAYMENT_SUCCEEDED" envDefault:"payment.order_payment_succeeded"`
+	PaymentFailedSubject       string `env:"NATS_SUBJECT_PAYMENT_FAILED" envDefault:"payment.order_payment_failed"`
 	PaymentCompensationSubject string `env:"NATS_SUBJECT_PAYMENT_COMPENSATION" envDefault:"payment.compensation"`
 
 	CommandBatchSize int           `env:"NATS_COMMAND_BATCH_SIZE" envDefault:"32"`
