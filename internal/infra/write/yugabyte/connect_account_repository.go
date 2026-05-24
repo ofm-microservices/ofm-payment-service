@@ -102,7 +102,7 @@ func (r *connectAccountRepo) Upsert(ctx context.Context, account domain.ConnectA
 			logging.Attempt(1),
 			logging.Retryable(false),
 			logging.DurationMS(time.Since(started)),
-		logging.String("user_id", account.UserID),
+			logging.String("user_id", account.UserID),
 			logging.Err(err),
 		)
 		return nil, r.translator.TranslateCreatePaymentIntentError(err)

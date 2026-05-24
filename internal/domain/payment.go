@@ -29,6 +29,28 @@ type PaymentIntent struct {
 	UpdatedAt        time.Time
 }
 
+const (
+	PaymentReleaseStatusPending  = "pending"
+	PaymentReleaseStatusReleased = "released"
+	PaymentReleaseStatusFailed   = "failed"
+)
+
+// PaymentRelease stores a payout transfer attempt to a seller.
+type PaymentRelease struct {
+	ReleaseID        string
+	OrderID          string
+	PaymentID        string
+	SellerUserID     string
+	AmountCents      int64
+	Currency         string
+	IdempotencyKey   string
+	StripeTransferID string
+	Status           string
+	FailureReason    string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
 // PaymentIntentCommand is the command payload persisted for intent creation.
 type PaymentIntentCommand struct {
 	IntentID       string
@@ -95,6 +117,13 @@ type PaymentIntentRepository interface {
 	UpdateWebhookPaymentIntent(ctx context.Context, orderID, providerIntentID, status string) (*PaymentIntent, error)
 	UpdateStatus(ctx context.Context, intentID, status string) error
 	UpdateCheckoutURL(ctx context.Context, intentID, checkoutURL string) error
+}
+
+// PaymentReleaseRepository persists seller payout releases.
+type PaymentReleaseRepository interface {
+	Create(ctx context.Context, release PaymentRelease) (*PaymentRelease, error)
+	GetByOrderID(ctx context.Context, orderID string) (*PaymentRelease, error)
+	UpdateStatus(ctx context.Context, releaseID, status, transferID, failureReason string) error
 }
 
 // PaymentIntentReadRepository persists the payment read model projection.

@@ -8,6 +8,7 @@ import (
 
 	"payment-service/internal/domain"
 
+	"github.com/google/uuid"
 	"github.com/ofm-microservices/ofm-common/pkg/logging"
 	paymentflowv1 "github.com/ofm-microservices/ofm-common/proto/paymentflow/v1"
 	"github.com/stripe/stripe-go/v85"
@@ -20,13 +21,14 @@ type service struct {
 	webhooks WebhookRepository
 	read     PaymentIntentReadRepository
 	accounts ConnectAccountRepository
+	releases PaymentReleaseRepository
 	broker   EventBroker
 	stripe   StripeConnectGateway
 	log      Logger
 }
 
 // New constructs the payment application service.
-func New(intents IntentRepository, webhooks WebhookRepository, read PaymentIntentReadRepository, accounts ConnectAccountRepository, broker EventBroker, stripe StripeConnectGateway, log Logger) (Service, error) {
+func New(intents IntentRepository, webhooks WebhookRepository, read PaymentIntentReadRepository, accounts ConnectAccountRepository, releases PaymentReleaseRepository, broker EventBroker, stripe StripeConnectGateway, log Logger) (Service, error) {
 	if intents == nil {
 		return nil, ErrNilIntentRepository
 	}
@@ -39,6 +41,9 @@ func New(intents IntentRepository, webhooks WebhookRepository, read PaymentInten
 	if accounts == nil {
 		return nil, ErrNilConnectAccountRepository
 	}
+	if releases == nil {
+		return nil, ErrNilPaymentReleaseRepository
+	}
 	if broker == nil {
 		return nil, ErrNilEventBroker
 	}
@@ -48,7 +53,7 @@ func New(intents IntentRepository, webhooks WebhookRepository, read PaymentInten
 	if log == nil {
 		return nil, ErrNilLogger
 	}
-	return &service{intents: intents, webhooks: webhooks, read: read, accounts: accounts, broker: broker, stripe: stripe, log: log.With(logging.String("module", "application"))}, nil
+	return &service{intents: intents, webhooks: webhooks, read: read, accounts: accounts, releases: releases, broker: broker, stripe: stripe, log: log.With(logging.String("module", "application"))}, nil
 }
 
 func (s *service) CreateIntent(ctx context.Context, cmd CreateIntentCommand) (*CreateIntentResult, error) {
@@ -313,6 +318,90 @@ func (s *service) GetConnectStatus(ctx context.Context, userID string) (*GetConn
 		Status:          account.Status,
 		DisabledReason:  account.DisabledReason,
 		OccurredAt:      time.Now().UTC().Format(time.RFC3339Nano),
+	}, nil
+}
+
+func (s *service) ReleaseFunds(ctx context.Context, cmd ReleaseFundsCommand) (*ReleaseFundsResult, error) {
+	account, err := s.accounts.GetByUserID(ctx, cmd.SellerUserID)
+	if err != nil {
+		return nil, err
+	}
+	if account.Status != domain.ConnectStatusCompleted || !account.PayoutsEnabled {
+		return nil, errors.New("seller connect account is not ready for payouts")
+	}
+	if existing, err := s.releases.GetByOrderID(ctx, cmd.OrderID); err == nil && existing != nil {
+		switch existing.Status {
+		case domain.PaymentReleaseStatusReleased:
+			return &ReleaseFundsResult{
+				OrderID:          existing.OrderID,
+				PaymentReleaseID: existing.ReleaseID,
+				StripeTransferID: existing.StripeTransferID,
+				Status:           existing.Status,
+				OccurredAt:       existing.UpdatedAt.UTC().Format(time.RFC3339Nano),
+			}, nil
+		case domain.PaymentReleaseStatusPending:
+			if existing.StripeTransferID != "" {
+				return &ReleaseFundsResult{
+					OrderID:          existing.OrderID,
+					PaymentReleaseID: existing.ReleaseID,
+					StripeTransferID: existing.StripeTransferID,
+					Status:           domain.PaymentReleaseStatusReleased,
+					OccurredAt:       existing.UpdatedAt.UTC().Format(time.RFC3339Nano),
+				}, nil
+			}
+		}
+	}
+	now := time.Now().UTC()
+	release := domain.PaymentRelease{
+		ReleaseID:      uuid.NewString(),
+		OrderID:        cmd.OrderID,
+		PaymentID:      cmd.PaymentID,
+		SellerUserID:   cmd.SellerUserID,
+		AmountCents:    cmd.AmountCents,
+		Currency:       strings.ToUpper(strings.TrimSpace(cmd.Currency)),
+		IdempotencyKey: strings.TrimSpace(cmd.IdempotencyKey),
+		Status:         domain.PaymentReleaseStatusPending,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	persisted, err := s.releases.Create(ctx, release)
+	if err != nil {
+		return nil, err
+	}
+	transferID, err := s.stripe.CreateTransfer(ctx, cmd, account.StripeAccountID)
+	if err != nil {
+		_ = s.releases.UpdateStatus(ctx, persisted.ReleaseID, domain.PaymentReleaseStatusFailed, "", err.Error())
+		return nil, err
+	}
+	if err := s.releases.UpdateStatus(ctx, persisted.ReleaseID, domain.PaymentReleaseStatusReleased, transferID, ""); err != nil {
+		return nil, err
+	}
+	return &ReleaseFundsResult{
+		OrderID:          persisted.OrderID,
+		PaymentReleaseID: persisted.ReleaseID,
+		StripeTransferID: transferID,
+		Status:           domain.PaymentReleaseStatusReleased,
+		OccurredAt:       now.Format(time.RFC3339Nano),
+	}, nil
+}
+
+func (s *service) GetReleaseByOrderID(ctx context.Context, orderID string) (*GetReleaseByOrderResult, error) {
+	release, err := s.releases.GetByOrderID(ctx, orderID)
+	if err != nil {
+		return nil, err
+	}
+	return &GetReleaseByOrderResult{
+		OrderID:          release.OrderID,
+		PaymentReleaseID: release.ReleaseID,
+		PaymentID:        release.PaymentID,
+		SellerUserID:     release.SellerUserID,
+		AmountCents:      release.AmountCents,
+		Currency:         release.Currency,
+		IdempotencyKey:   release.IdempotencyKey,
+		StripeTransferID: release.StripeTransferID,
+		Status:           release.Status,
+		FailureReason:    release.FailureReason,
+		OccurredAt:       release.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	}, nil
 }
 

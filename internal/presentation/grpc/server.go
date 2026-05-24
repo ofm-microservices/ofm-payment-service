@@ -143,3 +143,63 @@ func (s *server) CreateCheckoutSession(ctx context.Context, req *paymentcheckout
 		OccurredAt:            res.OccurredAt,
 	}, nil
 }
+
+// ReleaseFunds releases captured funds to the seller.
+func (s *server) ReleaseFunds(ctx context.Context, req *paymentcheckoutv1.ReleaseFundsRequest) (*paymentcheckoutv1.ReleaseFundsResponse, error) {
+	started := time.Now()
+	log := logging.WithContext(ctx, s.log)
+	res, err := s.svc.ReleaseFunds(ctx, app.ReleaseFundsCommand{
+		OrderID:        req.GetOrderId(),
+		PaymentID:      req.GetPaymentId(),
+		SellerUserID:   req.GetSellerUserId(),
+		AmountCents:    req.GetAmountCents(),
+		Currency:       req.GetCurrency(),
+		IdempotencyKey: req.GetIdempotencyKey(),
+		RequestedAt:    req.GetRequestedAt(),
+	})
+	if err != nil {
+		log.Error("release funds failed",
+			logging.Operation("grpc.payment.release_funds"),
+			logging.DurationMS(time.Since(started)),
+			logging.String("order_id", req.GetOrderId()),
+			logging.Err(err),
+		)
+		return nil, err
+	}
+	return &paymentcheckoutv1.ReleaseFundsResponse{
+		OrderId:          res.OrderID,
+		PaymentReleaseId: res.PaymentReleaseID,
+		StripeTransferId: res.StripeTransferID,
+		Status:           res.Status,
+		OccurredAt:       res.OccurredAt,
+	}, nil
+}
+
+// GetReleaseByOrderId returns the persisted payout release for recovery.
+func (s *server) GetReleaseByOrderId(ctx context.Context, req *paymentcheckoutv1.GetReleaseByOrderIdRequest) (*paymentcheckoutv1.GetReleaseByOrderIdResponse, error) {
+	started := time.Now()
+	log := logging.WithContext(ctx, s.log)
+	res, err := s.svc.GetReleaseByOrderID(ctx, req.GetOrderId())
+	if err != nil {
+		log.Error("get release by order id failed",
+			logging.Operation("grpc.payment.get_release_by_order_id"),
+			logging.DurationMS(time.Since(started)),
+			logging.String("order_id", req.GetOrderId()),
+			logging.Err(err),
+		)
+		return nil, err
+	}
+	return &paymentcheckoutv1.GetReleaseByOrderIdResponse{
+		OrderId:          res.OrderID,
+		PaymentReleaseId: res.PaymentReleaseID,
+		PaymentIntentId:  res.PaymentID,
+		SellerUserId:     res.SellerUserID,
+		AmountCents:      res.AmountCents,
+		Currency:         res.Currency,
+		IdempotencyKey:   res.IdempotencyKey,
+		StripeTransferId: res.StripeTransferID,
+		Status:           res.Status,
+		FailureReason:    res.FailureReason,
+		OccurredAt:       res.OccurredAt,
+	}, nil
+}

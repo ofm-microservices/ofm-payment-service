@@ -14,6 +14,8 @@ type Service interface {
 	StartFreelancerOnboarding(ctx context.Context, cmd StartFreelancerOnboardingCommand) (*StartFreelancerOnboardingResult, error)
 	GetConnectStatus(ctx context.Context, userID string) (*GetConnectStatusResult, error)
 	HandleConnectWebhook(ctx context.Context, evt ConnectWebhookCommand) error
+	ReleaseFunds(ctx context.Context, cmd ReleaseFundsCommand) (*ReleaseFundsResult, error)
+	GetReleaseByOrderID(ctx context.Context, orderID string) (*GetReleaseByOrderResult, error)
 }
 
 // IntentRepository aliases the domain payment intent repository.
@@ -28,10 +30,14 @@ type PaymentIntentReadRepository = domain.PaymentIntentReadRepository
 // ConnectAccountRepository aliases the Stripe Connect onboarding repository.
 type ConnectAccountRepository = domain.ConnectAccountRepository
 
+// PaymentReleaseRepository aliases the seller payout release repository.
+type PaymentReleaseRepository = domain.PaymentReleaseRepository
+
 // StripeConnectGateway abstracts the Stripe Connect onboarding API calls.
 type StripeConnectGateway interface {
 	CreateAccount(ctx context.Context, cmd StartFreelancerOnboardingCommand) (*domain.ConnectAccount, error)
 	CreateOnboardingLink(ctx context.Context, accountID, returnURL, refreshURL string) (string, error)
+	CreateTransfer(ctx context.Context, cmd ReleaseFundsCommand, destinationAccountID string) (string, error)
 }
 
 // EventBroker abstracts the runtime NATS broker.
@@ -132,5 +138,40 @@ type ConnectWebhookCommand struct {
 	PayoutsEnabled   bool   `json:"payouts_enabled"`
 	DisabledReason   string `json:"disabled_reason,omitempty"`
 	PayloadJSON      string `json:"payload_json"`
+	OccurredAt       string `json:"occurred_at"`
+}
+
+// ReleaseFundsCommand requests a seller payout transfer for a captured payment.
+type ReleaseFundsCommand struct {
+	OrderID        string `json:"order_id"`
+	PaymentID      string `json:"payment_id"`
+	SellerUserID   string `json:"seller_user_id"`
+	AmountCents    int64  `json:"amount_cents"`
+	Currency       string `json:"currency"`
+	IdempotencyKey string `json:"idempotency_key"`
+	RequestedAt    string `json:"requested_at"`
+}
+
+// ReleaseFundsResult reports the payout transfer outcome.
+type ReleaseFundsResult struct {
+	OrderID          string `json:"order_id"`
+	PaymentReleaseID string `json:"payment_release_id"`
+	StripeTransferID string `json:"stripe_transfer_id"`
+	Status           string `json:"status"`
+	OccurredAt       string `json:"occurred_at"`
+}
+
+// GetReleaseByOrderResult reports a persisted payout release.
+type GetReleaseByOrderResult struct {
+	OrderID          string `json:"order_id"`
+	PaymentReleaseID string `json:"payment_release_id"`
+	PaymentID        string `json:"payment_intent_id"`
+	SellerUserID     string `json:"seller_user_id"`
+	AmountCents      int64  `json:"amount_cents"`
+	Currency         string `json:"currency"`
+	IdempotencyKey   string `json:"idempotency_key"`
+	StripeTransferID string `json:"stripe_transfer_id"`
+	Status           string `json:"status"`
+	FailureReason    string `json:"failure_reason"`
 	OccurredAt       string `json:"occurred_at"`
 }
