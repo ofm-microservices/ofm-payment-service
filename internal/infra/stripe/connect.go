@@ -13,6 +13,7 @@ import (
 	stripec "github.com/stripe/stripe-go/v85"
 	account "github.com/stripe/stripe-go/v85/account"
 	accountlink "github.com/stripe/stripe-go/v85/accountlink"
+	transfer "github.com/stripe/stripe-go/v85/transfer"
 )
 
 type gateway struct {
@@ -79,6 +80,33 @@ func (g *gateway) CreateOnboardingLink(ctx context.Context, accountID, returnURL
 		return "", ErrCreateOnboardingLink
 	}
 	return link.URL, nil
+}
+
+func (g *gateway) CreateTransfer(ctx context.Context, cmd app.ReleaseFundsCommand, destinationAccountID string) (string, error) {
+	_ = ctx
+	amount := cmd.AmountCents
+	if amount <= 0 {
+		return "", ErrCreateAccount
+	}
+	params := &stripec.TransferParams{
+		Amount:        stripec.Int64(amount),
+		Currency:      stripec.String(strings.ToLower(strings.TrimSpace(cmd.Currency))),
+		Destination:   stripec.String(strings.TrimSpace(destinationAccountID)),
+		Description:   stripec.String("OFM order payout " + strings.TrimSpace(cmd.OrderID)),
+		TransferGroup: stripec.String(strings.TrimSpace(cmd.OrderID)),
+	}
+	params.SetIdempotencyKey(firstNonEmpty(cmd.IdempotencyKey, "order-release:"+strings.TrimSpace(cmd.OrderID)))
+	transferObj, err := transfer.New(params)
+	if err != nil {
+		g.log.Error("stripe api failed",
+			logging.Operation("stripe.connect.create_transfer"),
+			logging.String("order_id", cmd.OrderID),
+			logging.String("destination_account_id", destinationAccountID),
+			logging.Err(err),
+		)
+		return "", ErrCreateAccount
+	}
+	return transferObj.ID, nil
 }
 
 func firstNonEmpty(values ...string) string {

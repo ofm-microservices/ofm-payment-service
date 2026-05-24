@@ -8,6 +8,7 @@ var (
 	ErrNilReadRepository           = errors.New("payment read repository is nil")
 	ErrNilEventBroker              = errors.New("event broker is nil")
 	ErrNilConnectAccountRepository = errors.New("connect account repository is nil")
+	ErrNilPaymentReleaseRepository = errors.New("payment release repository is nil")
 	ErrNilStripeConnectGateway     = errors.New("stripe connect gateway is nil")
 	ErrNilLogger                   = errors.New("logger is nil")
 	ErrPublishEvent                = errors.New("publish event failed")

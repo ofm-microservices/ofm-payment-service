@@ -16,3 +16,12 @@ func (t *dbErrorTranslator) TranslateFindPaymentIntentError(err error) error {
 func (t *dbErrorTranslator) TranslateUpdatePaymentIntentError(err error) error {
 	return fmt.Errorf("update payment intent: %w", err)
 }
+func (t *dbErrorTranslator) TranslateCreatePaymentReleaseError(err error) error {
+	return fmt.Errorf("create payment release: %w", err)
+}
+func (t *dbErrorTranslator) TranslateFindPaymentReleaseError(err error) error {
+	return fmt.Errorf("find payment release: %w", err)
+}
+func (t *dbErrorTranslator) TranslateUpdatePaymentReleaseError(err error) error {
+	return fmt.Errorf("update payment release: %w", err)
+}

@@ -13,7 +13,7 @@ import (
 
 // RepoModule wires write- and read-model repositories into the FX graph.
 var RepoModule = fx.Options(
-	fx.Provide(writerepo.NewDBErrorTranslator, ProvideWriteRepo, ProvideWebhookRepo, ProvideConnectAccountRepo, ProvideReadRepo),
+	fx.Provide(writerepo.NewDBErrorTranslator, ProvideWriteRepo, ProvideWebhookRepo, ProvideConnectAccountRepo, ProvidePaymentReleaseRepo, ProvideReadRepo),
 )
 
 // ProvideWriteRepo constructs the Yugabyte-backed payment repository.
@@ -29,6 +29,11 @@ func ProvideWebhookRepo(dbx *sqlx.DB, translator writerepo.DBErrorTranslator, lg
 // ProvideConnectAccountRepo constructs the Yugabyte-backed connect-account repository.
 func ProvideConnectAccountRepo(dbx *sqlx.DB, translator writerepo.DBErrorTranslator, lg logging.Logger) (domain.ConnectAccountRepository, error) {
 	return writerepo.NewConnectAccountRepo(dbx, translator, lg)
+}
+
+// ProvidePaymentReleaseRepo constructs the Yugabyte-backed payout release repository.
+func ProvidePaymentReleaseRepo(dbx *sqlx.DB, translator writerepo.DBErrorTranslator, lg logging.Logger) (domain.PaymentReleaseRepository, error) {
+	return writerepo.NewPaymentReleaseRepo(dbx, translator, lg)
 }
 
 // ProvideReadRepo constructs the Redis-backed payment read repository.
