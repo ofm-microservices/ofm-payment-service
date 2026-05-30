@@ -17,18 +17,19 @@ import (
 )
 
 type service struct {
-	intents  IntentRepository
-	webhooks WebhookRepository
-	read     PaymentIntentReadRepository
-	accounts ConnectAccountRepository
-	releases PaymentReleaseRepository
-	broker   EventBroker
-	stripe   StripeConnectGateway
-	log      Logger
+	intents       IntentRepository
+	webhooks      WebhookRepository
+	read          PaymentIntentReadRepository
+	accounts      ConnectAccountRepository
+	releases      PaymentReleaseRepository
+	broker        EventBroker
+	stripe        StripeConnectGateway
+	skipTransfers bool
+	log           Logger
 }
 
 // New constructs the payment application service.
-func New(intents IntentRepository, webhooks WebhookRepository, read PaymentIntentReadRepository, accounts ConnectAccountRepository, releases PaymentReleaseRepository, broker EventBroker, stripe StripeConnectGateway, log Logger) (Service, error) {
+func New(intents IntentRepository, webhooks WebhookRepository, read PaymentIntentReadRepository, accounts ConnectAccountRepository, releases PaymentReleaseRepository, broker EventBroker, stripe StripeConnectGateway, skipTransfers bool, log Logger) (Service, error) {
 	if intents == nil {
 		return nil, ErrNilIntentRepository
 	}
@@ -53,7 +54,7 @@ func New(intents IntentRepository, webhooks WebhookRepository, read PaymentInten
 	if log == nil {
 		return nil, ErrNilLogger
 	}
-	return &service{intents: intents, webhooks: webhooks, read: read, accounts: accounts, releases: releases, broker: broker, stripe: stripe, log: log.With(logging.String("module", "application"))}, nil
+	return &service{intents: intents, webhooks: webhooks, read: read, accounts: accounts, releases: releases, broker: broker, stripe: stripe, skipTransfers: skipTransfers, log: log.With(logging.String("module", "application"))}, nil
 }
 
 func (s *service) CreateIntent(ctx context.Context, cmd CreateIntentCommand) (*CreateIntentResult, error) {
@@ -353,7 +354,7 @@ func (s *service) ReleaseFunds(ctx context.Context, cmd ReleaseFundsCommand) (*R
 	}
 	now := time.Now().UTC()
 	release := domain.PaymentRelease{
-		ReleaseID:      uuid.NewString(),
+		ReleaseID:      uuid.Must(uuid.NewV7()).String(),
 		OrderID:        cmd.OrderID,
 		PaymentID:      cmd.PaymentID,
 		SellerUserID:   cmd.SellerUserID,
@@ -367,6 +368,19 @@ func (s *service) ReleaseFunds(ctx context.Context, cmd ReleaseFundsCommand) (*R
 	persisted, err := s.releases.Create(ctx, release)
 	if err != nil {
 		return nil, err
+	}
+	if s.skipTransfers {
+		transferID := "sandbox:" + persisted.ReleaseID
+		if err := s.releases.UpdateStatus(ctx, persisted.ReleaseID, domain.PaymentReleaseStatusReleased, transferID, ""); err != nil {
+			return nil, err
+		}
+		return &ReleaseFundsResult{
+			OrderID:          persisted.OrderID,
+			PaymentReleaseID: persisted.ReleaseID,
+			StripeTransferID: transferID,
+			Status:           domain.PaymentReleaseStatusReleased,
+			OccurredAt:       now.Format(time.RFC3339Nano),
+		}, nil
 	}
 	transferID, err := s.stripe.CreateTransfer(ctx, cmd, account.StripeAccountID)
 	if err != nil {
