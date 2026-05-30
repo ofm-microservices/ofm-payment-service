@@ -116,7 +116,7 @@ func (s *server) CreateCheckoutSession(ctx context.Context, req *paymentcheckout
 	started := time.Now()
 	log := logging.WithContext(ctx, s.log)
 	res, err := s.svc.CreateIntent(ctx, app.CreateIntentCommand{
-		IntentID:       uuid.NewString(),
+		IntentID:       uuid.Must(uuid.NewV7()).String(),
 		SagaID:         req.GetSagaId(),
 		OrderID:        req.GetOrderId(),
 		AmountCents:    req.GetAmountCents(),
