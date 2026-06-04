@@ -52,7 +52,7 @@ func EnsureStream(cfg config.NATSConfig, log logging.Logger) error {
 
 	commands := &nats.StreamConfig{
 		Name:      cfg.PaymentCommandsStream,
-		Subjects:  []string{cfg.PaymentIntentSubject, cfg.PaymentWebhookSubject, cfg.PaymentCompensationSubject},
+		Subjects:  []string{cfg.PaymentIntentSubject, cfg.PaymentProjectionSubject, cfg.PaymentWebhookSubject, cfg.PaymentCompensationSubject},
 		Storage:   nats.FileStorage,
 		Retention: nats.LimitsPolicy,
 		Replicas:  1,

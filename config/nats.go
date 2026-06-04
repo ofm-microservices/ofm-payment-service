@@ -12,6 +12,7 @@ type NATSConfig struct {
 	PaymentEventsStream        string `env:"NATS_STREAM_PAYMENT_EVENTS" envDefault:"PAYMENT_EVENTS"`
 	PaymentIntentSubject       string `env:"NATS_SUBJECT_PAYMENT_INTENT" envDefault:"payment.intent"`
 	PaymentIntentResultSubject string `env:"NATS_SUBJECT_PAYMENT_INTENT_RESULT" envDefault:"payment.intent.result"`
+	PaymentProjectionSubject   string `env:"NATS_SUBJECT_PAYMENT_PROJECTION" envDefault:"payment.projection"`
 	PaymentWebhookSubject      string `env:"NATS_SUBJECT_PAYMENT_WEBHOOK" envDefault:"payment.webhook"`
 	PaymentSucceededSubject    string `env:"NATS_SUBJECT_PAYMENT_SUCCEEDED" envDefault:"payment.order_payment_succeeded"`
 	PaymentFailedSubject       string `env:"NATS_SUBJECT_PAYMENT_FAILED" envDefault:"payment.order_payment_failed"`

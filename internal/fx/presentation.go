@@ -19,11 +19,13 @@ import (
 var PresentationModule = fx.Options(
 	fx.Provide(
 		ProvidePaymentIntentSubscriber,
+		ProvidePaymentProjectionSubscriber,
 		ProvideOnboardingGRPCServer,
 		ProvideWebhookServer,
 	),
 	fx.Invoke(
 		InvokeSubscribePaymentIntent,
+		InvokeSubscribePaymentProjection,
 		InvokeRunOnboardingGRPCServer,
 		InvokeRunWebhookServer,
 	),
@@ -34,6 +36,13 @@ var PresentationModule = fx.Options(
 func ProvidePaymentIntentSubscriber(broker eventbroker.EventBroker, service app.Service, cfg *config.Config, lg logging.Logger) (events.PaymentIntentSubscriber, error) {
 	_ = lg
 	return events.NewPaymentIntentSubscriber(broker, service, cfg.NATS)
+}
+
+// ProvidePaymentProjectionSubscriber constructs the NATS subscriber used to
+// repair order-keyed payment projections.
+func ProvidePaymentProjectionSubscriber(broker eventbroker.EventBroker, service app.Service, cfg *config.Config, lg logging.Logger) (events.PaymentProjectionSubscriber, error) {
+	_ = lg
+	return events.NewPaymentProjectionSubscriber(broker, service, cfg.NATS)
 }
 
 // ProvideWebhookServer constructs the Stripe webhook HTTP server.
@@ -60,6 +69,30 @@ func InvokeSubscribePaymentIntent(lc fx.Lifecycle, subscriber events.PaymentInte
 				return err
 			}
 			lg.Info("payment-service initialized", logging.String("env", cfg.App.Env))
+			return nil
+		},
+		OnStop: func(context.Context) error {
+			if cancel != nil {
+				cancel()
+			}
+			return nil
+		},
+	})
+}
+
+// InvokeSubscribePaymentProjection starts the payment projection subscriber
+// with the FX lifecycle.
+func InvokeSubscribePaymentProjection(lc fx.Lifecycle, subscriber events.PaymentProjectionSubscriber, cfg *config.Config, lg logging.Logger) {
+	var cancel context.CancelFunc
+	lc.Append(fx.Hook{
+		OnStart: func(context.Context) error {
+			runCtx, runCancel := context.WithCancel(context.Background())
+			cancel = runCancel
+			if err := subscriber.Subscribe(runCtx); err != nil {
+				lg.Error("subscribe to payment projection repair jobs failed", logging.Err(err))
+				cancel()
+				return err
+			}
 			return nil
 		},
 		OnStop: func(context.Context) error {
