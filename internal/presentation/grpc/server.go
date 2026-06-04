@@ -203,3 +203,20 @@ func (s *server) GetReleaseByOrderId(ctx context.Context, req *paymentcheckoutv1
 		OccurredAt:       res.OccurredAt,
 	}, nil
 }
+
+// GetPaymentByOrderId returns the public payment snapshot for an order.
+func (s *server) GetPaymentByOrderId(ctx context.Context, req *paymentcheckoutv1.GetPaymentByOrderIdRequest) (*paymentcheckoutv1.GetPaymentByOrderIdResponse, error) {
+	started := time.Now()
+	log := logging.WithContext(ctx, s.log)
+	res, err := s.svc.GetPaymentByOrderID(ctx, req.GetOrderId())
+	if err != nil {
+		log.Error("get payment by order id failed",
+			logging.Operation("grpc.payment.get_payment_by_order_id"),
+			logging.DurationMS(time.Since(started)),
+			logging.String("order_id", req.GetOrderId()),
+			logging.Err(err),
+		)
+		return nil, err
+	}
+	return s.mapr.ToGetPaymentByOrderResponse(res), nil
+}

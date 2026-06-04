@@ -129,6 +129,7 @@ type PaymentReleaseRepository interface {
 // PaymentIntentReadRepository persists the payment read model projection.
 type PaymentIntentReadRepository interface {
 	Upsert(ctx context.Context, intent *PaymentIntent) error
+	GetByOrderID(ctx context.Context, orderID string) (*PaymentIntent, error)
 }
 
 // WebhookRepository persists deduplicated webhook events.

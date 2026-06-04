@@ -11,6 +11,8 @@ import (
 type Service interface {
 	CreateIntent(ctx context.Context, cmd CreateIntentCommand) (*CreateIntentResult, error)
 	HandleWebhook(ctx context.Context, evt WebhookCommand) error
+	GetPaymentByOrderID(ctx context.Context, orderID string) (*GetPaymentByOrderResult, error)
+	ProjectPaymentByOrderID(ctx context.Context, orderID string) error
 	StartFreelancerOnboarding(ctx context.Context, cmd StartFreelancerOnboardingCommand) (*StartFreelancerOnboardingResult, error)
 	GetConnectStatus(ctx context.Context, userID string) (*GetConnectStatusResult, error)
 	HandleConnectWebhook(ctx context.Context, evt ConnectWebhookCommand) error
@@ -174,4 +176,13 @@ type GetReleaseByOrderResult struct {
 	Status           string `json:"status"`
 	FailureReason    string `json:"failure_reason"`
 	OccurredAt       string `json:"occurred_at"`
+}
+
+// GetPaymentByOrderResult exposes the public payment snapshot keyed by order.
+type GetPaymentByOrderResult struct {
+	PaymentID   string `json:"payment_id"`
+	AmountCents int64  `json:"amount_cents"`
+	Currency    string `json:"currency"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
 }

@@ -17,19 +17,20 @@ import (
 )
 
 type service struct {
-	intents       IntentRepository
-	webhooks      WebhookRepository
-	read          PaymentIntentReadRepository
-	accounts      ConnectAccountRepository
-	releases      PaymentReleaseRepository
-	broker        EventBroker
-	stripe        StripeConnectGateway
-	skipTransfers bool
-	log           Logger
+	intents           IntentRepository
+	webhooks          WebhookRepository
+	read              PaymentIntentReadRepository
+	accounts          ConnectAccountRepository
+	releases          PaymentReleaseRepository
+	broker            EventBroker
+	projectionSubject string
+	stripe            StripeConnectGateway
+	skipTransfers     bool
+	log               Logger
 }
 
 // New constructs the payment application service.
-func New(intents IntentRepository, webhooks WebhookRepository, read PaymentIntentReadRepository, accounts ConnectAccountRepository, releases PaymentReleaseRepository, broker EventBroker, stripe StripeConnectGateway, skipTransfers bool, log Logger) (Service, error) {
+func New(intents IntentRepository, webhooks WebhookRepository, read PaymentIntentReadRepository, accounts ConnectAccountRepository, releases PaymentReleaseRepository, broker EventBroker, projectionSubject string, stripe StripeConnectGateway, skipTransfers bool, log Logger) (Service, error) {
 	if intents == nil {
 		return nil, ErrNilIntentRepository
 	}
@@ -48,13 +49,16 @@ func New(intents IntentRepository, webhooks WebhookRepository, read PaymentInten
 	if broker == nil {
 		return nil, ErrNilEventBroker
 	}
+	if strings.TrimSpace(projectionSubject) == "" {
+		return nil, ErrNilProjectionSubject
+	}
 	if stripe == nil {
 		return nil, ErrNilStripeConnectGateway
 	}
 	if log == nil {
 		return nil, ErrNilLogger
 	}
-	return &service{intents: intents, webhooks: webhooks, read: read, accounts: accounts, releases: releases, broker: broker, stripe: stripe, skipTransfers: skipTransfers, log: log.With(logging.String("module", "application"))}, nil
+	return &service{intents: intents, webhooks: webhooks, read: read, accounts: accounts, releases: releases, broker: broker, projectionSubject: projectionSubject, stripe: stripe, skipTransfers: skipTransfers, log: log.With(logging.String("module", "application"))}, nil
 }
 
 func (s *service) CreateIntent(ctx context.Context, cmd CreateIntentCommand) (*CreateIntentResult, error) {
@@ -201,6 +205,56 @@ func (s *service) HandleWebhook(ctx context.Context, evt WebhookCommand) error {
 	}
 }
 
+func (s *service) GetPaymentByOrderID(ctx context.Context, orderID string) (*GetPaymentByOrderResult, error) {
+	orderID = strings.TrimSpace(orderID)
+	if orderID == "" {
+		return nil, domain.ErrInvalidID
+	}
+	intent, err := s.read.GetByOrderID(ctx, orderID)
+	if err == nil && intent != nil {
+		return toPaymentByOrderResult(intent), nil
+	}
+	if err != nil && !errors.Is(err, domain.ErrIntentNotFound) {
+		s.log.Error("get payment projection cache failed",
+			logging.Operation("application.payment.get_by_order_id.cache"),
+			logging.String("order_id", orderID),
+			logging.Err(err),
+		)
+	}
+	intent, err = s.intents.GetByOrderID(ctx, orderID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.repairPaymentProjection(ctx, intent); err != nil {
+		s.log.Error("repair payment projection failed",
+			logging.Operation("application.payment.get_by_order_id.repair"),
+			logging.String("order_id", orderID),
+			logging.String("payment_intent_id", intent.IntentID),
+			logging.Err(err),
+		)
+	}
+	payload, err := protojson.Marshal(&paymentflowv1.PaymentProjectionRequest{
+		OrderId:     orderID,
+		RequestedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	})
+	if err == nil {
+		_ = s.broker.Publish(ctx, s.projectionSubject, payload)
+	}
+	return toPaymentByOrderResult(intent), nil
+}
+
+func (s *service) ProjectPaymentByOrderID(ctx context.Context, orderID string) error {
+	orderID = strings.TrimSpace(orderID)
+	if orderID == "" {
+		return domain.ErrInvalidID
+	}
+	intent, err := s.intents.GetByOrderID(ctx, orderID)
+	if err != nil {
+		return err
+	}
+	return s.repairPaymentProjection(ctx, intent)
+}
+
 func (s *service) Subscribe(ctx context.Context) error {
 	return s.broker.Subscribe(ctx, "payment.intent", func(ctx context.Context, subject string, payload []byte) error {
 		var cmd paymentflowv1.PaymentIntentCommand
@@ -219,6 +273,29 @@ func (s *service) Subscribe(ctx context.Context) error {
 		})
 		return err
 	})
+}
+
+func (s *service) repairPaymentProjection(ctx context.Context, intent *domain.PaymentIntent) error {
+	if intent == nil {
+		return domain.ErrIntentNotFound
+	}
+	if err := s.read.Upsert(ctx, intent); err != nil {
+		return err
+	}
+	return nil
+}
+
+func toPaymentByOrderResult(intent *domain.PaymentIntent) *GetPaymentByOrderResult {
+	if intent == nil {
+		return nil
+	}
+	return &GetPaymentByOrderResult{
+		PaymentID:   intent.IntentID,
+		AmountCents: intent.AmountCents,
+		Currency:    intent.Currency,
+		CreatedAt:   intent.CreatedAt.Format(time.RFC3339Nano),
+		UpdatedAt:   intent.UpdatedAt.Format(time.RFC3339Nano),
+	}
 }
 
 func (s *service) StartFreelancerOnboarding(ctx context.Context, cmd StartFreelancerOnboardingCommand) (*StartFreelancerOnboardingResult, error) {
