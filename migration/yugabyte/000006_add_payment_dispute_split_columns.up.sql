@@ -1,0 +1,6 @@
+ALTER TABLE payment_releases
+  ADD COLUMN IF NOT EXISTS freelancer_percentage INT4 NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS customer_percentage INT4 NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS freelancer_amount_cents BIGINT NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS customer_amount_cents BIGINT NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS stripe_refund_id TEXT;

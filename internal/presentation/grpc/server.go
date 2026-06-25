@@ -175,6 +175,42 @@ func (s *server) ReleaseFunds(ctx context.Context, req *paymentcheckoutv1.Releas
 	}, nil
 }
 
+// SettleDispute splits a disputed payment between the freelancer and the customer.
+func (s *server) SettleDispute(ctx context.Context, req *paymentcheckoutv1.SettleDisputeRequest) (*paymentcheckoutv1.SettleDisputeResponse, error) {
+	started := time.Now()
+	log := logging.WithContext(ctx, s.log)
+	res, err := s.svc.SettleDispute(ctx, app.SettleDisputeCommand{
+		OrderID:              req.GetOrderId(),
+		PaymentID:            req.GetPaymentId(),
+		SellerUserID:         req.GetSellerUserId(),
+		AmountCents:          req.GetAmountCents(),
+		Currency:             req.GetCurrency(),
+		FreelancerPercentage: req.GetFreelancerPercentage(),
+		CustomerPercentage:   req.GetCustomerPercentage(),
+		IdempotencyKey:       req.GetIdempotencyKey(),
+		RequestedAt:          req.GetRequestedAt(),
+	})
+	if err != nil {
+		log.Error("settle dispute failed",
+			logging.Operation("grpc.payment.settle_dispute"),
+			logging.DurationMS(time.Since(started)),
+			logging.String("order_id", req.GetOrderId()),
+			logging.Err(err),
+		)
+		return nil, err
+	}
+	return &paymentcheckoutv1.SettleDisputeResponse{
+		OrderId:               res.OrderID,
+		PaymentReleaseId:      res.PaymentReleaseID,
+		StripeTransferId:      res.StripeTransferID,
+		StripeRefundId:        res.StripeRefundID,
+		FreelancerAmountCents: res.FreelancerAmountCents,
+		CustomerAmountCents:   res.CustomerAmountCents,
+		Status:                res.Status,
+		OccurredAt:            res.OccurredAt,
+	}, nil
+}
+
 // GetReleaseByOrderId returns the persisted payout release for recovery.
 func (s *server) GetReleaseByOrderId(ctx context.Context, req *paymentcheckoutv1.GetReleaseByOrderIdRequest) (*paymentcheckoutv1.GetReleaseByOrderIdResponse, error) {
 	started := time.Now()

@@ -258,15 +258,18 @@ func NewPaymentReleaseRepo(db *sqlx.DB, translator DBErrorTranslator, log loggin
 const createPaymentReleaseQuery = `
 INSERT INTO payment_releases (
   payment_release_id, order_id, payment_intent_id, seller_user_id, amount_cents,
-  currency, idempotency_key, stripe_transfer_id, status, failure_reason,
+  currency, freelancer_percentage, customer_percentage, freelancer_amount_cents, customer_amount_cents,
+  idempotency_key, stripe_transfer_id, stripe_refund_id, status, failure_reason,
   created_at, updated_at
 ) VALUES (
   $1, $2, $3, $4, $5,
   $6, $7, $8, $9, $10,
-  $11, $12
+  $11, $12, $13, $14, $15,
+  $16, $17
 )
 ON CONFLICT (order_id) DO UPDATE SET
   stripe_transfer_id = COALESCE(NULLIF(EXCLUDED.stripe_transfer_id, ''), payment_releases.stripe_transfer_id),
+  stripe_refund_id = COALESCE(NULLIF(EXCLUDED.stripe_refund_id, ''), payment_releases.stripe_refund_id),
   status = CASE
     WHEN EXCLUDED.status = 'released' THEN 'released'
     WHEN payment_releases.status = 'released' THEN 'released'
@@ -279,10 +282,10 @@ ON CONFLICT (order_id) DO UPDATE SET
     ELSE payment_releases.failure_reason
   END,
   updated_at = EXCLUDED.updated_at
-RETURNING payment_release_id, order_id, payment_intent_id, seller_user_id, amount_cents, currency, idempotency_key, stripe_transfer_id, status, failure_reason, created_at, updated_at`
+RETURNING payment_release_id, order_id, payment_intent_id, seller_user_id, amount_cents, currency, freelancer_percentage, customer_percentage, freelancer_amount_cents, customer_amount_cents, idempotency_key, stripe_transfer_id, stripe_refund_id, status, failure_reason, created_at, updated_at`
 
 const getPaymentReleaseByOrderIDQuery = `
-SELECT payment_release_id, order_id, payment_intent_id, seller_user_id, amount_cents, currency, idempotency_key, stripe_transfer_id, status, failure_reason, created_at, updated_at
+SELECT payment_release_id, order_id, payment_intent_id, seller_user_id, amount_cents, currency, freelancer_percentage, customer_percentage, freelancer_amount_cents, customer_amount_cents, idempotency_key, stripe_transfer_id, stripe_refund_id, status, failure_reason, created_at, updated_at
 FROM payment_releases WHERE order_id = $1`
 
 const updatePaymentReleaseStatusQuery = `
@@ -299,11 +302,13 @@ func (r *PaymentReleaseRepo) Create(ctx context.Context, release domain.PaymentR
 	var row model.PaymentReleaseRow
 	if err := r.db.QueryRowContext(ctx, createPaymentReleaseQuery,
 		release.ReleaseID, release.OrderID, release.PaymentID, release.SellerUserID, release.AmountCents,
-		release.Currency, release.IdempotencyKey, release.StripeTransferID, release.Status, release.FailureReason,
+		release.Currency, release.FreelancerPercentage, release.CustomerPercentage, release.FreelancerAmountCents, release.CustomerAmountCents,
+		release.IdempotencyKey, release.StripeTransferID, release.StripeRefundID, release.Status, release.FailureReason,
 		release.CreatedAt, release.UpdatedAt,
 	).Scan(
 		&row.ReleaseID, &row.OrderID, &row.PaymentID, &row.SellerUserID, &row.AmountCents,
-		&row.Currency, &row.IdempotencyKey, &row.StripeTransferID, &row.Status, &row.FailureReason,
+		&row.Currency, &row.FreelancerPercentage, &row.CustomerPercentage, &row.FreelancerAmountCents, &row.CustomerAmountCents,
+		&row.IdempotencyKey, &row.StripeTransferID, &row.StripeRefundID, &row.Status, &row.FailureReason,
 		&row.CreatedAt, &row.UpdatedAt,
 	); err != nil {
 		status = "error"
@@ -318,18 +323,23 @@ func (r *PaymentReleaseRepo) Create(ctx context.Context, release domain.PaymentR
 		return nil, r.translator.TranslateCreatePaymentReleaseError(err)
 	}
 	return &domain.PaymentRelease{
-		ReleaseID:        row.ReleaseID,
-		OrderID:          row.OrderID,
-		PaymentID:        row.PaymentID,
-		SellerUserID:     row.SellerUserID,
-		AmountCents:      row.AmountCents,
-		Currency:         row.Currency,
-		IdempotencyKey:   row.IdempotencyKey,
-		StripeTransferID: row.StripeTransferID,
-		Status:           row.Status,
-		FailureReason:    row.FailureReason,
-		CreatedAt:        row.CreatedAt,
-		UpdatedAt:        row.UpdatedAt,
+		ReleaseID:             row.ReleaseID,
+		OrderID:               row.OrderID,
+		PaymentID:             row.PaymentID,
+		SellerUserID:          row.SellerUserID,
+		AmountCents:           row.AmountCents,
+		Currency:              row.Currency,
+		FreelancerPercentage:  row.FreelancerPercentage,
+		CustomerPercentage:    row.CustomerPercentage,
+		FreelancerAmountCents: row.FreelancerAmountCents,
+		CustomerAmountCents:   row.CustomerAmountCents,
+		IdempotencyKey:        row.IdempotencyKey,
+		StripeTransferID:      row.StripeTransferID,
+		StripeRefundID:        row.StripeRefundID,
+		Status:                row.Status,
+		FailureReason:         row.FailureReason,
+		CreatedAt:             row.CreatedAt,
+		UpdatedAt:             row.UpdatedAt,
 	}, nil
 }
 
@@ -342,25 +352,31 @@ func (r *PaymentReleaseRepo) GetByOrderID(ctx context.Context, orderID string) (
 	var row model.PaymentReleaseRow
 	if err := r.db.QueryRowContext(ctx, getPaymentReleaseByOrderIDQuery, orderID).Scan(
 		&row.ReleaseID, &row.OrderID, &row.PaymentID, &row.SellerUserID, &row.AmountCents,
-		&row.Currency, &row.IdempotencyKey, &row.StripeTransferID, &row.Status, &row.FailureReason,
+		&row.Currency, &row.FreelancerPercentage, &row.CustomerPercentage, &row.FreelancerAmountCents, &row.CustomerAmountCents,
+		&row.IdempotencyKey, &row.StripeTransferID, &row.StripeRefundID, &row.Status, &row.FailureReason,
 		&row.CreatedAt, &row.UpdatedAt,
 	); err != nil {
 		status = "error"
 		return nil, r.translator.TranslateFindPaymentReleaseError(err)
 	}
 	return &domain.PaymentRelease{
-		ReleaseID:        row.ReleaseID,
-		OrderID:          row.OrderID,
-		PaymentID:        row.PaymentID,
-		SellerUserID:     row.SellerUserID,
-		AmountCents:      row.AmountCents,
-		Currency:         row.Currency,
-		IdempotencyKey:   row.IdempotencyKey,
-		StripeTransferID: row.StripeTransferID,
-		Status:           row.Status,
-		FailureReason:    row.FailureReason,
-		CreatedAt:        row.CreatedAt,
-		UpdatedAt:        row.UpdatedAt,
+		ReleaseID:             row.ReleaseID,
+		OrderID:               row.OrderID,
+		PaymentID:             row.PaymentID,
+		SellerUserID:          row.SellerUserID,
+		AmountCents:           row.AmountCents,
+		Currency:              row.Currency,
+		FreelancerPercentage:  row.FreelancerPercentage,
+		CustomerPercentage:    row.CustomerPercentage,
+		FreelancerAmountCents: row.FreelancerAmountCents,
+		CustomerAmountCents:   row.CustomerAmountCents,
+		IdempotencyKey:        row.IdempotencyKey,
+		StripeTransferID:      row.StripeTransferID,
+		StripeRefundID:        row.StripeRefundID,
+		Status:                row.Status,
+		FailureReason:         row.FailureReason,
+		CreatedAt:             row.CreatedAt,
+		UpdatedAt:             row.UpdatedAt,
 	}, nil
 }
 

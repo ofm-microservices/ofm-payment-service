@@ -35,6 +35,12 @@ type GetPaymentByOrderRequest = paymentcheckoutv1.GetPaymentByOrderIdRequest
 // GetPaymentByOrderResponse aliases the transport payment-by-order response.
 type GetPaymentByOrderResponse = paymentcheckoutv1.GetPaymentByOrderIdResponse
 
+// SettleDisputeRequest aliases the transport dispute-settlement request.
+type SettleDisputeRequest = paymentcheckoutv1.SettleDisputeRequest
+
+// SettleDisputeResponse aliases the transport dispute-settlement response.
+type SettleDisputeResponse = paymentcheckoutv1.SettleDisputeResponse
+
 // Server exposes the payment onboarding gRPC lifecycle.
 type Server interface {
 	Start() error

@@ -17,6 +17,7 @@ type Service interface {
 	GetConnectStatus(ctx context.Context, userID string) (*GetConnectStatusResult, error)
 	HandleConnectWebhook(ctx context.Context, evt ConnectWebhookCommand) error
 	ReleaseFunds(ctx context.Context, cmd ReleaseFundsCommand) (*ReleaseFundsResult, error)
+	SettleDispute(ctx context.Context, cmd SettleDisputeCommand) (*SettleDisputeResult, error)
 	GetReleaseByOrderID(ctx context.Context, orderID string) (*GetReleaseByOrderResult, error)
 }
 
@@ -40,6 +41,7 @@ type StripeConnectGateway interface {
 	CreateAccount(ctx context.Context, cmd StartFreelancerOnboardingCommand) (*domain.ConnectAccount, error)
 	CreateOnboardingLink(ctx context.Context, accountID, returnURL, refreshURL string) (string, error)
 	CreateTransfer(ctx context.Context, cmd ReleaseFundsCommand, destinationAccountID string) (string, error)
+	CreateRefund(ctx context.Context, paymentIntentID string, amountCents int64, idempotencyKey string) (string, error)
 }
 
 // EventBroker abstracts the runtime NATS broker.
@@ -163,19 +165,50 @@ type ReleaseFundsResult struct {
 	OccurredAt       string `json:"occurred_at"`
 }
 
+// SettleDisputeCommand splits a disputed order payment between the freelancer
+// and the customer.
+type SettleDisputeCommand struct {
+	OrderID              string `json:"order_id"`
+	PaymentID            string `json:"payment_id"`
+	SellerUserID         string `json:"seller_user_id"`
+	AmountCents          int64  `json:"amount_cents"`
+	Currency             string `json:"currency"`
+	FreelancerPercentage int32  `json:"freelancer_percentage"`
+	CustomerPercentage   int32  `json:"customer_percentage"`
+	IdempotencyKey       string `json:"idempotency_key"`
+	RequestedAt          string `json:"requested_at"`
+}
+
+// SettleDisputeResult reports the split settlement outcome.
+type SettleDisputeResult struct {
+	OrderID               string `json:"order_id"`
+	PaymentReleaseID      string `json:"payment_release_id"`
+	StripeTransferID      string `json:"stripe_transfer_id"`
+	StripeRefundID        string `json:"stripe_refund_id"`
+	FreelancerAmountCents int64  `json:"freelancer_amount_cents"`
+	CustomerAmountCents   int64  `json:"customer_amount_cents"`
+	Status                string `json:"status"`
+	OccurredAt            string `json:"occurred_at"`
+}
+
 // GetReleaseByOrderResult reports a persisted payout release.
 type GetReleaseByOrderResult struct {
-	OrderID          string `json:"order_id"`
-	PaymentReleaseID string `json:"payment_release_id"`
-	PaymentID        string `json:"payment_intent_id"`
-	SellerUserID     string `json:"seller_user_id"`
-	AmountCents      int64  `json:"amount_cents"`
-	Currency         string `json:"currency"`
-	IdempotencyKey   string `json:"idempotency_key"`
-	StripeTransferID string `json:"stripe_transfer_id"`
-	Status           string `json:"status"`
-	FailureReason    string `json:"failure_reason"`
-	OccurredAt       string `json:"occurred_at"`
+	OrderID               string `json:"order_id"`
+	PaymentReleaseID      string `json:"payment_release_id"`
+	PaymentID             string `json:"payment_intent_id"`
+	SellerUserID          string `json:"seller_user_id"`
+	AmountCents           int64  `json:"amount_cents"`
+	Currency              string `json:"currency"`
+	FreelancerPercentage  int32  `json:"freelancer_percentage"`
+	CustomerPercentage    int32  `json:"customer_percentage"`
+	FreelancerAmountCents int64  `json:"freelancer_amount_cents"`
+	CustomerAmountCents   int64  `json:"customer_amount_cents"`
+	IdempotencyKey        string `json:"idempotency_key"`
+	StripeTransferID      string `json:"stripe_transfer_id"`
+	StripeRefundID        string `json:"stripe_refund_id"`
+	Status                string `json:"status"`
+	FailureReason         string `json:"failure_reason"`
+	OccurredAt            string `json:"occurred_at"`
 }
 
 // GetPaymentByOrderResult exposes the public payment snapshot keyed by order.

@@ -13,6 +13,7 @@ import (
 	stripec "github.com/stripe/stripe-go/v85"
 	account "github.com/stripe/stripe-go/v85/account"
 	accountlink "github.com/stripe/stripe-go/v85/accountlink"
+	refund "github.com/stripe/stripe-go/v85/refund"
 	transfer "github.com/stripe/stripe-go/v85/transfer"
 )
 
@@ -107,6 +108,28 @@ func (g *gateway) CreateTransfer(ctx context.Context, cmd app.ReleaseFundsComman
 		return "", ErrCreateAccount
 	}
 	return transferObj.ID, nil
+}
+
+func (g *gateway) CreateRefund(ctx context.Context, paymentIntentID string, amountCents int64, idempotencyKey string) (string, error) {
+	_ = ctx
+	if amountCents <= 0 {
+		return "", nil
+	}
+	params := &stripec.RefundParams{
+		PaymentIntent: stripec.String(strings.TrimSpace(paymentIntentID)),
+		Amount:        stripec.Int64(amountCents),
+	}
+	params.SetIdempotencyKey(firstNonEmpty(idempotencyKey, "order-refund:"+strings.TrimSpace(paymentIntentID)))
+	refundObj, err := refund.New(params)
+	if err != nil {
+		g.log.Error("stripe api failed",
+			logging.Operation("stripe.connect.create_refund"),
+			logging.String("payment_intent_id", paymentIntentID),
+			logging.Err(err),
+		)
+		return "", ErrCreateRefund
+	}
+	return refundObj.ID, nil
 }
 
 func firstNonEmpty(values ...string) string {
