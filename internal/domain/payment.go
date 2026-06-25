@@ -37,18 +37,23 @@ const (
 
 // PaymentRelease stores a payout transfer attempt to a seller.
 type PaymentRelease struct {
-	ReleaseID        string
-	OrderID          string
-	PaymentID        string
-	SellerUserID     string
-	AmountCents      int64
-	Currency         string
-	IdempotencyKey   string
-	StripeTransferID string
-	Status           string
-	FailureReason    string
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ReleaseID             string
+	OrderID               string
+	PaymentID             string
+	SellerUserID          string
+	AmountCents           int64
+	Currency              string
+	FreelancerPercentage  int32
+	CustomerPercentage    int32
+	FreelancerAmountCents int64
+	CustomerAmountCents   int64
+	IdempotencyKey        string
+	StripeTransferID      string
+	StripeRefundID        string
+	Status                string
+	FailureReason         string
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
 }
 
 // PaymentIntentCommand is the command payload persisted for intent creation.

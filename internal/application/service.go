@@ -476,23 +476,152 @@ func (s *service) ReleaseFunds(ctx context.Context, cmd ReleaseFundsCommand) (*R
 	}, nil
 }
 
+func (s *service) SettleDispute(ctx context.Context, cmd SettleDisputeCommand) (*SettleDisputeResult, error) {
+	if strings.TrimSpace(cmd.OrderID) == "" || strings.TrimSpace(cmd.PaymentID) == "" || strings.TrimSpace(cmd.SellerUserID) == "" {
+		return nil, domain.ErrInvalidID
+	}
+	if cmd.FreelancerPercentage < 0 || cmd.CustomerPercentage < 0 || cmd.FreelancerPercentage+cmd.CustomerPercentage != 100 {
+		return nil, domain.ErrInvalidID
+	}
+
+	if existing, err := s.releases.GetByOrderID(ctx, cmd.OrderID); err == nil && existing != nil {
+		if existing.Status == domain.PaymentReleaseStatusReleased {
+			return &SettleDisputeResult{
+				OrderID:               existing.OrderID,
+				PaymentReleaseID:      existing.ReleaseID,
+				StripeTransferID:      existing.StripeTransferID,
+				StripeRefundID:        existing.StripeRefundID,
+				FreelancerAmountCents: existing.FreelancerAmountCents,
+				CustomerAmountCents:   existing.CustomerAmountCents,
+				Status:                existing.Status,
+				OccurredAt:            existing.UpdatedAt.UTC().Format(time.RFC3339Nano),
+			}, nil
+		}
+	}
+
+	now := time.Now().UTC()
+	freelancerAmount := cmd.AmountCents * int64(cmd.FreelancerPercentage) / 100
+	customerAmount := cmd.AmountCents - freelancerAmount
+	release := domain.PaymentRelease{
+		ReleaseID:             uuid.Must(uuid.NewV7()).String(),
+		OrderID:               cmd.OrderID,
+		PaymentID:             cmd.PaymentID,
+		SellerUserID:          cmd.SellerUserID,
+		AmountCents:           cmd.AmountCents,
+		Currency:              strings.ToUpper(strings.TrimSpace(cmd.Currency)),
+		FreelancerPercentage:  cmd.FreelancerPercentage,
+		CustomerPercentage:    cmd.CustomerPercentage,
+		FreelancerAmountCents: freelancerAmount,
+		CustomerAmountCents:   customerAmount,
+		IdempotencyKey:        strings.TrimSpace(cmd.IdempotencyKey),
+		Status:                domain.PaymentReleaseStatusPending,
+		CreatedAt:             now,
+		UpdatedAt:             now,
+	}
+	persisted, err := s.releases.Create(ctx, release)
+	if err != nil {
+		return nil, err
+	}
+
+	var transferID, refundID string
+	if s.skipTransfers {
+		transferID = "sandbox:" + persisted.ReleaseID + ":transfer"
+		if customerAmount > 0 {
+			refundID = "sandbox:" + persisted.ReleaseID + ":refund"
+		}
+	} else {
+		account, err := s.accounts.GetByUserID(ctx, cmd.SellerUserID)
+		if err != nil {
+			_ = s.releases.UpdateStatus(ctx, persisted.ReleaseID, domain.PaymentReleaseStatusFailed, "", err.Error())
+			return nil, err
+		}
+		if account.Status != domain.ConnectStatusCompleted || !account.PayoutsEnabled {
+			err = errors.New("seller connect account is not ready for payouts")
+			_ = s.releases.UpdateStatus(ctx, persisted.ReleaseID, domain.PaymentReleaseStatusFailed, "", err.Error())
+			return nil, err
+		}
+		if freelancerAmount > 0 {
+			transferID, err = s.stripe.CreateTransfer(ctx, ReleaseFundsCommand{
+				OrderID:        cmd.OrderID,
+				PaymentID:      cmd.PaymentID,
+				SellerUserID:   cmd.SellerUserID,
+				AmountCents:    freelancerAmount,
+				Currency:       cmd.Currency,
+				IdempotencyKey: cmd.IdempotencyKey + ":freelancer",
+				RequestedAt:    cmd.RequestedAt,
+			}, account.StripeAccountID)
+			if err != nil {
+				_ = s.releases.UpdateStatus(ctx, persisted.ReleaseID, domain.PaymentReleaseStatusFailed, "", err.Error())
+				return nil, err
+			}
+		}
+		if customerAmount > 0 {
+			refundID, err = s.stripe.CreateRefund(ctx, cmd.PaymentID, customerAmount, cmd.IdempotencyKey+":customer")
+			if err != nil {
+				_ = s.releases.UpdateStatus(ctx, persisted.ReleaseID, domain.PaymentReleaseStatusFailed, transferID, err.Error())
+				return nil, err
+			}
+		}
+	}
+
+	if err := s.releases.UpdateStatus(ctx, persisted.ReleaseID, domain.PaymentReleaseStatusReleased, transferID, ""); err != nil {
+		return nil, err
+	}
+	if refundID != "" {
+		// Persist the refund identifier in a second pass to keep the release row authoritative.
+		_, _ = s.releases.Create(ctx, domain.PaymentRelease{
+			ReleaseID:             persisted.ReleaseID,
+			OrderID:               persisted.OrderID,
+			PaymentID:             persisted.PaymentID,
+			SellerUserID:          persisted.SellerUserID,
+			AmountCents:           persisted.AmountCents,
+			Currency:              persisted.Currency,
+			FreelancerPercentage:  persisted.FreelancerPercentage,
+			CustomerPercentage:    persisted.CustomerPercentage,
+			FreelancerAmountCents: persisted.FreelancerAmountCents,
+			CustomerAmountCents:   persisted.CustomerAmountCents,
+			IdempotencyKey:        persisted.IdempotencyKey,
+			StripeTransferID:      transferID,
+			StripeRefundID:        refundID,
+			Status:                domain.PaymentReleaseStatusReleased,
+			CreatedAt:             persisted.CreatedAt,
+			UpdatedAt:             now,
+		})
+	}
+	return &SettleDisputeResult{
+		OrderID:               persisted.OrderID,
+		PaymentReleaseID:      persisted.ReleaseID,
+		StripeTransferID:      transferID,
+		StripeRefundID:        refundID,
+		FreelancerAmountCents: freelancerAmount,
+		CustomerAmountCents:   customerAmount,
+		Status:                domain.PaymentReleaseStatusReleased,
+		OccurredAt:            now.Format(time.RFC3339Nano),
+	}, nil
+}
+
 func (s *service) GetReleaseByOrderID(ctx context.Context, orderID string) (*GetReleaseByOrderResult, error) {
 	release, err := s.releases.GetByOrderID(ctx, orderID)
 	if err != nil {
 		return nil, err
 	}
 	return &GetReleaseByOrderResult{
-		OrderID:          release.OrderID,
-		PaymentReleaseID: release.ReleaseID,
-		PaymentID:        release.PaymentID,
-		SellerUserID:     release.SellerUserID,
-		AmountCents:      release.AmountCents,
-		Currency:         release.Currency,
-		IdempotencyKey:   release.IdempotencyKey,
-		StripeTransferID: release.StripeTransferID,
-		Status:           release.Status,
-		FailureReason:    release.FailureReason,
-		OccurredAt:       release.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		OrderID:               release.OrderID,
+		PaymentReleaseID:      release.ReleaseID,
+		PaymentID:             release.PaymentID,
+		SellerUserID:          release.SellerUserID,
+		AmountCents:           release.AmountCents,
+		Currency:              release.Currency,
+		FreelancerPercentage:  release.FreelancerPercentage,
+		CustomerPercentage:    release.CustomerPercentage,
+		FreelancerAmountCents: release.FreelancerAmountCents,
+		CustomerAmountCents:   release.CustomerAmountCents,
+		IdempotencyKey:        release.IdempotencyKey,
+		StripeTransferID:      release.StripeTransferID,
+		StripeRefundID:        release.StripeRefundID,
+		Status:                release.Status,
+		FailureReason:         release.FailureReason,
+		OccurredAt:            release.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	}, nil
 }
 
