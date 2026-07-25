@@ -29,6 +29,33 @@ type PaymentIntent struct {
 	UpdatedAt        time.Time
 }
 
+const (
+	PaymentReleaseStatusPending  = "pending"
+	PaymentReleaseStatusReleased = "released"
+	PaymentReleaseStatusFailed   = "failed"
+)
+
+// PaymentRelease stores a payout transfer attempt to a seller.
+type PaymentRelease struct {
+	ReleaseID             string
+	OrderID               string
+	PaymentID             string
+	SellerUserID          string
+	AmountCents           int64
+	Currency              string
+	FreelancerPercentage  int32
+	CustomerPercentage    int32
+	FreelancerAmountCents int64
+	CustomerAmountCents   int64
+	IdempotencyKey        string
+	StripeTransferID      string
+	StripeRefundID        string
+	Status                string
+	FailureReason         string
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+}
+
 // PaymentIntentCommand is the command payload persisted for intent creation.
 type PaymentIntentCommand struct {
 	IntentID       string
@@ -91,13 +118,23 @@ type ConnectAccountRepository interface {
 type PaymentIntentRepository interface {
 	Create(ctx context.Context, intent PaymentIntent) (*PaymentIntent, error)
 	GetByID(ctx context.Context, intentID string) (*PaymentIntent, error)
+	GetByOrderID(ctx context.Context, orderID string) (*PaymentIntent, error)
+	UpdateWebhookPaymentIntent(ctx context.Context, orderID, providerIntentID, status string) (*PaymentIntent, error)
 	UpdateStatus(ctx context.Context, intentID, status string) error
 	UpdateCheckoutURL(ctx context.Context, intentID, checkoutURL string) error
+}
+
+// PaymentReleaseRepository persists seller payout releases.
+type PaymentReleaseRepository interface {
+	Create(ctx context.Context, release PaymentRelease) (*PaymentRelease, error)
+	GetByOrderID(ctx context.Context, orderID string) (*PaymentRelease, error)
+	UpdateStatus(ctx context.Context, releaseID, status, transferID, failureReason string) error
 }
 
 // PaymentIntentReadRepository persists the payment read model projection.
 type PaymentIntentReadRepository interface {
 	Upsert(ctx context.Context, intent *PaymentIntent) error
+	GetByOrderID(ctx context.Context, orderID string) (*PaymentIntent, error)
 }
 
 // WebhookRepository persists deduplicated webhook events.

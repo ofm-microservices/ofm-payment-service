@@ -3,30 +3,34 @@ package application
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
 	"payment-service/internal/domain"
 
+	"github.com/google/uuid"
 	"github.com/ofm-microservices/ofm-common/pkg/logging"
 	paymentflowv1 "github.com/ofm-microservices/ofm-common/proto/paymentflow/v1"
 	"github.com/stripe/stripe-go/v85"
+	checkoutsession "github.com/stripe/stripe-go/v85/checkout/session"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
 type service struct {
-	intents  IntentRepository
-	webhooks WebhookRepository
-	read     PaymentIntentReadRepository
-	accounts ConnectAccountRepository
-	broker   EventBroker
-	stripe   StripeConnectGateway
-	log      Logger
+	intents           IntentRepository
+	webhooks          WebhookRepository
+	read              PaymentIntentReadRepository
+	accounts          ConnectAccountRepository
+	releases          PaymentReleaseRepository
+	broker            EventBroker
+	projectionSubject string
+	stripe            StripeConnectGateway
+	skipTransfers     bool
+	log               Logger
 }
 
 // New constructs the payment application service.
-func New(intents IntentRepository, webhooks WebhookRepository, read PaymentIntentReadRepository, accounts ConnectAccountRepository, broker EventBroker, stripe StripeConnectGateway, log Logger) (Service, error) {
+func New(intents IntentRepository, webhooks WebhookRepository, read PaymentIntentReadRepository, accounts ConnectAccountRepository, releases PaymentReleaseRepository, broker EventBroker, projectionSubject string, stripe StripeConnectGateway, skipTransfers bool, log Logger) (Service, error) {
 	if intents == nil {
 		return nil, ErrNilIntentRepository
 	}
@@ -39,8 +43,14 @@ func New(intents IntentRepository, webhooks WebhookRepository, read PaymentInten
 	if accounts == nil {
 		return nil, ErrNilConnectAccountRepository
 	}
+	if releases == nil {
+		return nil, ErrNilPaymentReleaseRepository
+	}
 	if broker == nil {
 		return nil, ErrNilEventBroker
+	}
+	if strings.TrimSpace(projectionSubject) == "" {
+		return nil, ErrNilProjectionSubject
 	}
 	if stripe == nil {
 		return nil, ErrNilStripeConnectGateway
@@ -48,7 +58,7 @@ func New(intents IntentRepository, webhooks WebhookRepository, read PaymentInten
 	if log == nil {
 		return nil, ErrNilLogger
 	}
-	return &service{intents: intents, webhooks: webhooks, read: read, accounts: accounts, broker: broker, stripe: stripe, log: log.With(logging.String("module", "application"))}, nil
+	return &service{intents: intents, webhooks: webhooks, read: read, accounts: accounts, releases: releases, broker: broker, projectionSubject: projectionSubject, stripe: stripe, skipTransfers: skipTransfers, log: log.With(logging.String("module", "application"))}, nil
 }
 
 func (s *service) CreateIntent(ctx context.Context, cmd CreateIntentCommand) (*CreateIntentResult, error) {
@@ -66,20 +76,76 @@ func (s *service) CreateIntent(ctx context.Context, cmd CreateIntentCommand) (*C
 	if _, err := s.intents.Create(ctx, intent); err != nil {
 		return nil, err
 	}
-	_ = s.read.Upsert(ctx, &intent)
+	session, err := checkoutsession.New(&stripe.CheckoutSessionParams{
+		Mode:              stripe.String(string(stripe.CheckoutSessionModePayment)),
+		SuccessURL:        stripe.String("http://localhost:3000/orders/checkout/success?session_id={CHECKOUT_SESSION_ID}"),
+		CancelURL:         stripe.String("http://localhost:3000/orders/checkout/cancel?session_id={CHECKOUT_SESSION_ID}"),
+		ClientReferenceID: stripe.String(cmd.OrderID),
+		CustomerCreation:  stripe.String(string(stripe.CheckoutSessionCustomerCreationAlways)),
+		PaymentMethodTypes: []*string{
+			stripe.String("card"),
+		},
+		LineItems: []*stripe.CheckoutSessionLineItemParams{
+			{
+				Quantity: stripe.Int64(1),
+				PriceData: &stripe.CheckoutSessionLineItemPriceDataParams{
+					Currency:   stripe.String(strings.ToLower(strings.TrimSpace(cmd.Currency))),
+					UnitAmount: stripe.Int64(cmd.AmountCents),
+					ProductData: &stripe.CheckoutSessionLineItemPriceDataProductDataParams{
+						Name:        stripe.String(cmd.OrderID),
+						Description: stripe.String("OFM order checkout"),
+						Metadata: map[string]string{
+							"order_id": cmd.OrderID,
+							"saga_id":  cmd.SagaID,
+						},
+					},
+				},
+			},
+		},
+		Metadata: map[string]string{
+			"order_id": cmd.OrderID,
+			"saga_id":  cmd.SagaID,
+		},
+		PaymentIntentData: &stripe.CheckoutSessionPaymentIntentDataParams{
+			Metadata: map[string]string{
+				"order_id": cmd.OrderID,
+				"saga_id":  cmd.SagaID,
+			},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if session == nil {
+		return nil, errors.New("stripe checkout session not created")
+	}
+	intent.CheckoutURL = session.URL
+	intent.ProviderIntentID = session.ID
+	_ = s.intents.UpdateCheckoutURL(ctx, intent.IntentID, intent.CheckoutURL)
+	_ = s.intents.UpdateStatus(ctx, intent.IntentID, domain.PaymentStatusIntentCreated)
+	if created, err := s.intents.GetByID(ctx, intent.IntentID); err == nil {
+		created.CheckoutURL = intent.CheckoutURL
+		created.ProviderIntentID = intent.ProviderIntentID
+		created.Status = domain.PaymentStatusIntentCreated
+		_ = s.read.Upsert(ctx, created)
+	}
 	res := &CreateIntentResult{
-		IntentID:   cmd.IntentID,
-		SagaID:     cmd.SagaID,
-		OrderID:    cmd.OrderID,
-		Status:     domain.PaymentStatusPending,
-		OccurredAt: now.Format(time.RFC3339Nano),
+		IntentID:         cmd.IntentID,
+		SagaID:           cmd.SagaID,
+		OrderID:          cmd.OrderID,
+		ProviderIntentID: session.ID,
+		CheckoutURL:      session.URL,
+		Status:           domain.PaymentStatusIntentCreated,
+		OccurredAt:       now.Format(time.RFC3339Nano),
 	}
 	payload, err := protojson.Marshal(&paymentflowv1.PaymentIntentResult{
-		SagaId:          cmd.SagaID,
-		OrderId:         cmd.OrderID,
-		PaymentIntentId: cmd.IntentID,
-		Status:          domain.PaymentStatusPending,
-		OccurredAt:      now.Format(time.RFC3339Nano),
+		SagaId:           cmd.SagaID,
+		OrderId:          cmd.OrderID,
+		PaymentIntentId:  cmd.IntentID,
+		CheckoutUrl:      session.URL,
+		ProviderIntentId: session.ID,
+		Status:           domain.PaymentStatusIntentCreated,
+		OccurredAt:       now.Format(time.RFC3339Nano),
 	})
 	if err == nil {
 		_ = s.broker.Publish(ctx, "payment.intent.result", payload)
@@ -91,6 +157,15 @@ func (s *service) HandleWebhook(ctx context.Context, evt WebhookCommand) error {
 	if exists, _ := s.webhooks.Exists(ctx, evt.EventID); exists {
 		return nil
 	}
+	if evt.OrderID == "" {
+		return errors.New("missing order id in payment webhook")
+	}
+	intent, err := s.intents.UpdateWebhookPaymentIntent(ctx, evt.OrderID, evt.ProviderIntentID, evt.Status)
+	if err != nil {
+		return err
+	}
+	evt.IntentID = intent.IntentID
+	evt.OrderID = intent.OrderID
 	if _, err := s.webhooks.Create(ctx, domain.WebhookEvent{
 		EventID:   evt.EventID,
 		Provider:  evt.Provider,
@@ -102,46 +177,82 @@ func (s *service) HandleWebhook(ctx context.Context, evt WebhookCommand) error {
 	}); err != nil {
 		return err
 	}
-	if intent, err := s.intents.GetByID(ctx, evt.IntentID); err == nil {
-		intent.Status = evt.Status
-		intent.UpdatedAt = time.Now().UTC()
-		_ = s.read.Upsert(ctx, intent)
-	}
-	payload, err := protojson.Marshal(&paymentflowv1.PaymentStatusEvent{
-		SagaId:          evt.SagaID,
-		OrderId:         evt.OrderID,
-		PaymentIntentId: evt.IntentID,
-		Status:          evt.Status,
-		OccurredAt:      time.Now().UTC().Format(time.RFC3339Nano),
-	})
-	if err != nil {
-		return fmt.Errorf("marshal payment status event: %w", err)
-	}
-	if err := s.broker.Publish(ctx, "payment.status", payload); err != nil {
-		return err
-	}
+	intent.ProviderIntentID = evt.ProviderIntentID
+	intent.Status = evt.Status
+	intent.UpdatedAt = time.Now().UTC()
+	_ = s.read.Upsert(ctx, intent)
 	switch evt.Status {
 	case domain.PaymentStatusCaptured:
 		completed, _ := protojson.Marshal(&paymentflowv1.PaymentStatusEvent{
 			SagaId:          evt.SagaID,
 			OrderId:         evt.OrderID,
 			PaymentIntentId: evt.IntentID,
-			Status:          "completed",
+			Status:          "payment.order_payment_succeeded",
 			OccurredAt:      time.Now().UTC().Format(time.RFC3339Nano),
 		})
-		return s.broker.Publish(ctx, "payment.completed", completed)
+		return s.broker.Publish(ctx, "payment.order_payment_succeeded", completed)
 	case domain.PaymentStatusFailed:
 		failed, _ := protojson.Marshal(&paymentflowv1.PaymentStatusEvent{
 			SagaId:          evt.SagaID,
 			OrderId:         evt.OrderID,
 			PaymentIntentId: evt.IntentID,
-			Status:          "failed",
+			Status:          "payment.order_payment_failed",
 			OccurredAt:      time.Now().UTC().Format(time.RFC3339Nano),
 		})
-		return s.broker.Publish(ctx, "payment.failed", failed)
+		return s.broker.Publish(ctx, "payment.order_payment_failed", failed)
 	default:
 		return nil
 	}
+}
+
+func (s *service) GetPaymentByOrderID(ctx context.Context, orderID string) (*GetPaymentByOrderResult, error) {
+	orderID = strings.TrimSpace(orderID)
+	if orderID == "" {
+		return nil, domain.ErrInvalidID
+	}
+	intent, err := s.read.GetByOrderID(ctx, orderID)
+	if err == nil && intent != nil {
+		return toPaymentByOrderResult(intent), nil
+	}
+	if err != nil && !errors.Is(err, domain.ErrIntentNotFound) {
+		s.log.Error("get payment projection cache failed",
+			logging.Operation("application.payment.get_by_order_id.cache"),
+			logging.String("order_id", orderID),
+			logging.Err(err),
+		)
+	}
+	intent, err = s.intents.GetByOrderID(ctx, orderID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.repairPaymentProjection(ctx, intent); err != nil {
+		s.log.Error("repair payment projection failed",
+			logging.Operation("application.payment.get_by_order_id.repair"),
+			logging.String("order_id", orderID),
+			logging.String("payment_intent_id", intent.IntentID),
+			logging.Err(err),
+		)
+	}
+	payload, err := protojson.Marshal(&paymentflowv1.PaymentProjectionRequest{
+		OrderId:     orderID,
+		RequestedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	})
+	if err == nil {
+		_ = s.broker.Publish(ctx, s.projectionSubject, payload)
+	}
+	return toPaymentByOrderResult(intent), nil
+}
+
+func (s *service) ProjectPaymentByOrderID(ctx context.Context, orderID string) error {
+	orderID = strings.TrimSpace(orderID)
+	if orderID == "" {
+		return domain.ErrInvalidID
+	}
+	intent, err := s.intents.GetByOrderID(ctx, orderID)
+	if err != nil {
+		return err
+	}
+	return s.repairPaymentProjection(ctx, intent)
 }
 
 func (s *service) Subscribe(ctx context.Context) error {
@@ -162,6 +273,29 @@ func (s *service) Subscribe(ctx context.Context) error {
 		})
 		return err
 	})
+}
+
+func (s *service) repairPaymentProjection(ctx context.Context, intent *domain.PaymentIntent) error {
+	if intent == nil {
+		return domain.ErrIntentNotFound
+	}
+	if err := s.read.Upsert(ctx, intent); err != nil {
+		return err
+	}
+	return nil
+}
+
+func toPaymentByOrderResult(intent *domain.PaymentIntent) *GetPaymentByOrderResult {
+	if intent == nil {
+		return nil
+	}
+	return &GetPaymentByOrderResult{
+		PaymentID:   intent.IntentID,
+		AmountCents: intent.AmountCents,
+		Currency:    intent.Currency,
+		CreatedAt:   intent.CreatedAt.Format(time.RFC3339Nano),
+		UpdatedAt:   intent.UpdatedAt.Format(time.RFC3339Nano),
+	}
 }
 
 func (s *service) StartFreelancerOnboarding(ctx context.Context, cmd StartFreelancerOnboardingCommand) (*StartFreelancerOnboardingResult, error) {
@@ -245,6 +379,249 @@ func (s *service) StartFreelancerOnboarding(ctx context.Context, cmd StartFreela
 		PayoutsEnabled:   persisted.PayoutsEnabled,
 		DisabledReason:   persisted.DisabledReason,
 		OccurredAt:       now.Format(time.RFC3339Nano),
+	}, nil
+}
+
+func (s *service) GetConnectStatus(ctx context.Context, userID string) (*GetConnectStatusResult, error) {
+	if strings.TrimSpace(userID) == "" {
+		return nil, domain.ErrInvalidID
+	}
+	account, err := s.accounts.GetByUserID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	return &GetConnectStatusResult{
+		UserID:          account.UserID,
+		StripeAccountID: account.StripeAccountID,
+		Status:          account.Status,
+		DisabledReason:  account.DisabledReason,
+		OccurredAt:      time.Now().UTC().Format(time.RFC3339Nano),
+	}, nil
+}
+
+func (s *service) ReleaseFunds(ctx context.Context, cmd ReleaseFundsCommand) (*ReleaseFundsResult, error) {
+	account, err := s.accounts.GetByUserID(ctx, cmd.SellerUserID)
+	if err != nil {
+		return nil, err
+	}
+	if account.Status != domain.ConnectStatusCompleted || !account.PayoutsEnabled {
+		return nil, errors.New("seller connect account is not ready for payouts")
+	}
+	if existing, err := s.releases.GetByOrderID(ctx, cmd.OrderID); err == nil && existing != nil {
+		switch existing.Status {
+		case domain.PaymentReleaseStatusReleased:
+			return &ReleaseFundsResult{
+				OrderID:          existing.OrderID,
+				PaymentReleaseID: existing.ReleaseID,
+				StripeTransferID: existing.StripeTransferID,
+				Status:           existing.Status,
+				OccurredAt:       existing.UpdatedAt.UTC().Format(time.RFC3339Nano),
+			}, nil
+		case domain.PaymentReleaseStatusPending:
+			if existing.StripeTransferID != "" {
+				return &ReleaseFundsResult{
+					OrderID:          existing.OrderID,
+					PaymentReleaseID: existing.ReleaseID,
+					StripeTransferID: existing.StripeTransferID,
+					Status:           domain.PaymentReleaseStatusReleased,
+					OccurredAt:       existing.UpdatedAt.UTC().Format(time.RFC3339Nano),
+				}, nil
+			}
+		}
+	}
+	now := time.Now().UTC()
+	release := domain.PaymentRelease{
+		ReleaseID:      uuid.Must(uuid.NewV7()).String(),
+		OrderID:        cmd.OrderID,
+		PaymentID:      cmd.PaymentID,
+		SellerUserID:   cmd.SellerUserID,
+		AmountCents:    cmd.AmountCents,
+		Currency:       strings.ToUpper(strings.TrimSpace(cmd.Currency)),
+		IdempotencyKey: strings.TrimSpace(cmd.IdempotencyKey),
+		Status:         domain.PaymentReleaseStatusPending,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	persisted, err := s.releases.Create(ctx, release)
+	if err != nil {
+		return nil, err
+	}
+	if s.skipTransfers {
+		transferID := "sandbox:" + persisted.ReleaseID
+		if err := s.releases.UpdateStatus(ctx, persisted.ReleaseID, domain.PaymentReleaseStatusReleased, transferID, ""); err != nil {
+			return nil, err
+		}
+		return &ReleaseFundsResult{
+			OrderID:          persisted.OrderID,
+			PaymentReleaseID: persisted.ReleaseID,
+			StripeTransferID: transferID,
+			Status:           domain.PaymentReleaseStatusReleased,
+			OccurredAt:       now.Format(time.RFC3339Nano),
+		}, nil
+	}
+	transferID, err := s.stripe.CreateTransfer(ctx, cmd, account.StripeAccountID)
+	if err != nil {
+		_ = s.releases.UpdateStatus(ctx, persisted.ReleaseID, domain.PaymentReleaseStatusFailed, "", err.Error())
+		return nil, err
+	}
+	if err := s.releases.UpdateStatus(ctx, persisted.ReleaseID, domain.PaymentReleaseStatusReleased, transferID, ""); err != nil {
+		return nil, err
+	}
+	return &ReleaseFundsResult{
+		OrderID:          persisted.OrderID,
+		PaymentReleaseID: persisted.ReleaseID,
+		StripeTransferID: transferID,
+		Status:           domain.PaymentReleaseStatusReleased,
+		OccurredAt:       now.Format(time.RFC3339Nano),
+	}, nil
+}
+
+func (s *service) SettleDispute(ctx context.Context, cmd SettleDisputeCommand) (*SettleDisputeResult, error) {
+	if strings.TrimSpace(cmd.OrderID) == "" || strings.TrimSpace(cmd.PaymentID) == "" || strings.TrimSpace(cmd.SellerUserID) == "" {
+		return nil, domain.ErrInvalidID
+	}
+	if cmd.FreelancerPercentage < 0 || cmd.CustomerPercentage < 0 || cmd.FreelancerPercentage+cmd.CustomerPercentage != 100 {
+		return nil, domain.ErrInvalidID
+	}
+
+	if existing, err := s.releases.GetByOrderID(ctx, cmd.OrderID); err == nil && existing != nil {
+		if existing.Status == domain.PaymentReleaseStatusReleased {
+			return &SettleDisputeResult{
+				OrderID:               existing.OrderID,
+				PaymentReleaseID:      existing.ReleaseID,
+				StripeTransferID:      existing.StripeTransferID,
+				StripeRefundID:        existing.StripeRefundID,
+				FreelancerAmountCents: existing.FreelancerAmountCents,
+				CustomerAmountCents:   existing.CustomerAmountCents,
+				Status:                existing.Status,
+				OccurredAt:            existing.UpdatedAt.UTC().Format(time.RFC3339Nano),
+			}, nil
+		}
+	}
+
+	now := time.Now().UTC()
+	freelancerAmount := cmd.AmountCents * int64(cmd.FreelancerPercentage) / 100
+	customerAmount := cmd.AmountCents - freelancerAmount
+	release := domain.PaymentRelease{
+		ReleaseID:             uuid.Must(uuid.NewV7()).String(),
+		OrderID:               cmd.OrderID,
+		PaymentID:             cmd.PaymentID,
+		SellerUserID:          cmd.SellerUserID,
+		AmountCents:           cmd.AmountCents,
+		Currency:              strings.ToUpper(strings.TrimSpace(cmd.Currency)),
+		FreelancerPercentage:  cmd.FreelancerPercentage,
+		CustomerPercentage:    cmd.CustomerPercentage,
+		FreelancerAmountCents: freelancerAmount,
+		CustomerAmountCents:   customerAmount,
+		IdempotencyKey:        strings.TrimSpace(cmd.IdempotencyKey),
+		Status:                domain.PaymentReleaseStatusPending,
+		CreatedAt:             now,
+		UpdatedAt:             now,
+	}
+	persisted, err := s.releases.Create(ctx, release)
+	if err != nil {
+		return nil, err
+	}
+
+	var transferID, refundID string
+	if s.skipTransfers {
+		transferID = "sandbox:" + persisted.ReleaseID + ":transfer"
+		if customerAmount > 0 {
+			refundID = "sandbox:" + persisted.ReleaseID + ":refund"
+		}
+	} else {
+		account, err := s.accounts.GetByUserID(ctx, cmd.SellerUserID)
+		if err != nil {
+			_ = s.releases.UpdateStatus(ctx, persisted.ReleaseID, domain.PaymentReleaseStatusFailed, "", err.Error())
+			return nil, err
+		}
+		if account.Status != domain.ConnectStatusCompleted || !account.PayoutsEnabled {
+			err = errors.New("seller connect account is not ready for payouts")
+			_ = s.releases.UpdateStatus(ctx, persisted.ReleaseID, domain.PaymentReleaseStatusFailed, "", err.Error())
+			return nil, err
+		}
+		if freelancerAmount > 0 {
+			transferID, err = s.stripe.CreateTransfer(ctx, ReleaseFundsCommand{
+				OrderID:        cmd.OrderID,
+				PaymentID:      cmd.PaymentID,
+				SellerUserID:   cmd.SellerUserID,
+				AmountCents:    freelancerAmount,
+				Currency:       cmd.Currency,
+				IdempotencyKey: cmd.IdempotencyKey + ":freelancer",
+				RequestedAt:    cmd.RequestedAt,
+			}, account.StripeAccountID)
+			if err != nil {
+				_ = s.releases.UpdateStatus(ctx, persisted.ReleaseID, domain.PaymentReleaseStatusFailed, "", err.Error())
+				return nil, err
+			}
+		}
+		if customerAmount > 0 {
+			refundID, err = s.stripe.CreateRefund(ctx, cmd.PaymentID, customerAmount, cmd.IdempotencyKey+":customer")
+			if err != nil {
+				_ = s.releases.UpdateStatus(ctx, persisted.ReleaseID, domain.PaymentReleaseStatusFailed, transferID, err.Error())
+				return nil, err
+			}
+		}
+	}
+
+	if err := s.releases.UpdateStatus(ctx, persisted.ReleaseID, domain.PaymentReleaseStatusReleased, transferID, ""); err != nil {
+		return nil, err
+	}
+	if refundID != "" {
+		// Persist the refund identifier in a second pass to keep the release row authoritative.
+		_, _ = s.releases.Create(ctx, domain.PaymentRelease{
+			ReleaseID:             persisted.ReleaseID,
+			OrderID:               persisted.OrderID,
+			PaymentID:             persisted.PaymentID,
+			SellerUserID:          persisted.SellerUserID,
+			AmountCents:           persisted.AmountCents,
+			Currency:              persisted.Currency,
+			FreelancerPercentage:  persisted.FreelancerPercentage,
+			CustomerPercentage:    persisted.CustomerPercentage,
+			FreelancerAmountCents: persisted.FreelancerAmountCents,
+			CustomerAmountCents:   persisted.CustomerAmountCents,
+			IdempotencyKey:        persisted.IdempotencyKey,
+			StripeTransferID:      transferID,
+			StripeRefundID:        refundID,
+			Status:                domain.PaymentReleaseStatusReleased,
+			CreatedAt:             persisted.CreatedAt,
+			UpdatedAt:             now,
+		})
+	}
+	return &SettleDisputeResult{
+		OrderID:               persisted.OrderID,
+		PaymentReleaseID:      persisted.ReleaseID,
+		StripeTransferID:      transferID,
+		StripeRefundID:        refundID,
+		FreelancerAmountCents: freelancerAmount,
+		CustomerAmountCents:   customerAmount,
+		Status:                domain.PaymentReleaseStatusReleased,
+		OccurredAt:            now.Format(time.RFC3339Nano),
+	}, nil
+}
+
+func (s *service) GetReleaseByOrderID(ctx context.Context, orderID string) (*GetReleaseByOrderResult, error) {
+	release, err := s.releases.GetByOrderID(ctx, orderID)
+	if err != nil {
+		return nil, err
+	}
+	return &GetReleaseByOrderResult{
+		OrderID:               release.OrderID,
+		PaymentReleaseID:      release.ReleaseID,
+		PaymentID:             release.PaymentID,
+		SellerUserID:          release.SellerUserID,
+		AmountCents:           release.AmountCents,
+		Currency:              release.Currency,
+		FreelancerPercentage:  release.FreelancerPercentage,
+		CustomerPercentage:    release.CustomerPercentage,
+		FreelancerAmountCents: release.FreelancerAmountCents,
+		CustomerAmountCents:   release.CustomerAmountCents,
+		IdempotencyKey:        release.IdempotencyKey,
+		StripeTransferID:      release.StripeTransferID,
+		StripeRefundID:        release.StripeRefundID,
+		Status:                release.Status,
+		FailureReason:         release.FailureReason,
+		OccurredAt:            release.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	}, nil
 }
 

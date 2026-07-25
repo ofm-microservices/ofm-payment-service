@@ -11,8 +11,14 @@ import (
 type Service interface {
 	CreateIntent(ctx context.Context, cmd CreateIntentCommand) (*CreateIntentResult, error)
 	HandleWebhook(ctx context.Context, evt WebhookCommand) error
+	GetPaymentByOrderID(ctx context.Context, orderID string) (*GetPaymentByOrderResult, error)
+	ProjectPaymentByOrderID(ctx context.Context, orderID string) error
 	StartFreelancerOnboarding(ctx context.Context, cmd StartFreelancerOnboardingCommand) (*StartFreelancerOnboardingResult, error)
+	GetConnectStatus(ctx context.Context, userID string) (*GetConnectStatusResult, error)
 	HandleConnectWebhook(ctx context.Context, evt ConnectWebhookCommand) error
+	ReleaseFunds(ctx context.Context, cmd ReleaseFundsCommand) (*ReleaseFundsResult, error)
+	SettleDispute(ctx context.Context, cmd SettleDisputeCommand) (*SettleDisputeResult, error)
+	GetReleaseByOrderID(ctx context.Context, orderID string) (*GetReleaseByOrderResult, error)
 }
 
 // IntentRepository aliases the domain payment intent repository.
@@ -27,10 +33,15 @@ type PaymentIntentReadRepository = domain.PaymentIntentReadRepository
 // ConnectAccountRepository aliases the Stripe Connect onboarding repository.
 type ConnectAccountRepository = domain.ConnectAccountRepository
 
+// PaymentReleaseRepository aliases the seller payout release repository.
+type PaymentReleaseRepository = domain.PaymentReleaseRepository
+
 // StripeConnectGateway abstracts the Stripe Connect onboarding API calls.
 type StripeConnectGateway interface {
 	CreateAccount(ctx context.Context, cmd StartFreelancerOnboardingCommand) (*domain.ConnectAccount, error)
 	CreateOnboardingLink(ctx context.Context, accountID, returnURL, refreshURL string) (string, error)
+	CreateTransfer(ctx context.Context, cmd ReleaseFundsCommand, destinationAccountID string) (string, error)
+	CreateRefund(ctx context.Context, paymentIntentID string, amountCents int64, idempotencyKey string) (string, error)
 }
 
 // EventBroker abstracts the runtime NATS broker.
@@ -109,6 +120,16 @@ type StartFreelancerOnboardingResult struct {
 	OccurredAt       string `json:"occurred_at"`
 }
 
+// GetConnectStatusResult reports the current Stripe Connect onboarding status
+// for one freelancer.
+type GetConnectStatusResult struct {
+	UserID          string `json:"user_id"`
+	StripeAccountID string `json:"stripe_account_id"`
+	Status          string `json:"status"`
+	DisabledReason  string `json:"disabled_reason,omitempty"`
+	OccurredAt      string `json:"occurred_at"`
+}
+
 // ConnectWebhookCommand is the normalized Stripe Connect webhook input.
 type ConnectWebhookCommand struct {
 	EventID          string `json:"event_id"`
@@ -122,4 +143,79 @@ type ConnectWebhookCommand struct {
 	DisabledReason   string `json:"disabled_reason,omitempty"`
 	PayloadJSON      string `json:"payload_json"`
 	OccurredAt       string `json:"occurred_at"`
+}
+
+// ReleaseFundsCommand requests a seller payout transfer for a captured payment.
+type ReleaseFundsCommand struct {
+	OrderID        string `json:"order_id"`
+	PaymentID      string `json:"payment_id"`
+	SellerUserID   string `json:"seller_user_id"`
+	AmountCents    int64  `json:"amount_cents"`
+	Currency       string `json:"currency"`
+	IdempotencyKey string `json:"idempotency_key"`
+	RequestedAt    string `json:"requested_at"`
+}
+
+// ReleaseFundsResult reports the payout transfer outcome.
+type ReleaseFundsResult struct {
+	OrderID          string `json:"order_id"`
+	PaymentReleaseID string `json:"payment_release_id"`
+	StripeTransferID string `json:"stripe_transfer_id"`
+	Status           string `json:"status"`
+	OccurredAt       string `json:"occurred_at"`
+}
+
+// SettleDisputeCommand splits a disputed order payment between the freelancer
+// and the customer.
+type SettleDisputeCommand struct {
+	OrderID              string `json:"order_id"`
+	PaymentID            string `json:"payment_id"`
+	SellerUserID         string `json:"seller_user_id"`
+	AmountCents          int64  `json:"amount_cents"`
+	Currency             string `json:"currency"`
+	FreelancerPercentage int32  `json:"freelancer_percentage"`
+	CustomerPercentage   int32  `json:"customer_percentage"`
+	IdempotencyKey       string `json:"idempotency_key"`
+	RequestedAt          string `json:"requested_at"`
+}
+
+// SettleDisputeResult reports the split settlement outcome.
+type SettleDisputeResult struct {
+	OrderID               string `json:"order_id"`
+	PaymentReleaseID      string `json:"payment_release_id"`
+	StripeTransferID      string `json:"stripe_transfer_id"`
+	StripeRefundID        string `json:"stripe_refund_id"`
+	FreelancerAmountCents int64  `json:"freelancer_amount_cents"`
+	CustomerAmountCents   int64  `json:"customer_amount_cents"`
+	Status                string `json:"status"`
+	OccurredAt            string `json:"occurred_at"`
+}
+
+// GetReleaseByOrderResult reports a persisted payout release.
+type GetReleaseByOrderResult struct {
+	OrderID               string `json:"order_id"`
+	PaymentReleaseID      string `json:"payment_release_id"`
+	PaymentID             string `json:"payment_intent_id"`
+	SellerUserID          string `json:"seller_user_id"`
+	AmountCents           int64  `json:"amount_cents"`
+	Currency              string `json:"currency"`
+	FreelancerPercentage  int32  `json:"freelancer_percentage"`
+	CustomerPercentage    int32  `json:"customer_percentage"`
+	FreelancerAmountCents int64  `json:"freelancer_amount_cents"`
+	CustomerAmountCents   int64  `json:"customer_amount_cents"`
+	IdempotencyKey        string `json:"idempotency_key"`
+	StripeTransferID      string `json:"stripe_transfer_id"`
+	StripeRefundID        string `json:"stripe_refund_id"`
+	Status                string `json:"status"`
+	FailureReason         string `json:"failure_reason"`
+	OccurredAt            string `json:"occurred_at"`
+}
+
+// GetPaymentByOrderResult exposes the public payment snapshot keyed by order.
+type GetPaymentByOrderResult struct {
+	PaymentID   string `json:"payment_id"`
+	AmountCents int64  `json:"amount_cents"`
+	Currency    string `json:"currency"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
 }

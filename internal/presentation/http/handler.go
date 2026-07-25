@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"payment-service/internal/application"
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/ofm-microservices/ofm-common/pkg/logging"
@@ -13,7 +14,7 @@ import (
 )
 
 func (s *server) handleWebhook(c *fiber.Ctx) error {
-	event, err := webhook.ConstructEvent(c.Body(), c.Get("Stripe-Signature"), s.stripe.FreelancerOnboardingWebhookSecret)
+	event, err := webhook.ConstructEvent(c.Body(), c.Get("Stripe-Signature"), s.stripe.CheckoutWebhookSecret)
 	if err != nil {
 		s.log.Error("stripe webhook verification failed", logging.Err(err))
 		return c.Status(fiber.StatusBadRequest).SendString("invalid webhook signature")
@@ -86,6 +87,7 @@ func extractStripeWebhook(event stripe.Event, evt *application.WebhookCommand) e
 		evt.ProviderIntentID = pi.ID
 		evt.OrderID = metadataValue(pi.Metadata, "order_id")
 		evt.SagaID = metadataValue(pi.Metadata, "saga_id")
+		evt.OccurredAt = time.Unix(event.Created, 0).UTC().Format(time.RFC3339Nano)
 		evt.Status = mapStripeEventStatus(string(event.Type), string(pi.Status))
 		return nil
 	default:

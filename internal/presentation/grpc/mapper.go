@@ -3,6 +3,7 @@ package grpc
 import (
 	app "payment-service/internal/application"
 
+	paymentcheckoutv1 "github.com/ofm-microservices/ofm-common/proto/paymentcheckout/v1"
 	paymentconnectv1 "github.com/ofm-microservices/ofm-common/proto/paymentconnect/v1"
 )
 
@@ -32,5 +33,25 @@ func (m *mapper) ToStartFreelancerOnboardingResponse(res *app.StartFreelancerOnb
 		PayoutsEnabled:   res.PayoutsEnabled,
 		DisabledReason:   res.DisabledReason,
 		OccurredAt:       res.OccurredAt,
+	}
+}
+
+func (m *mapper) ToGetConnectStatusResponse(res *app.GetConnectStatusResult) *paymentconnectv1.GetConnectStatusResponse {
+	return &paymentconnectv1.GetConnectStatusResponse{
+		UserId:          res.UserID,
+		Status:          res.Status,
+		StripeAccountId: res.StripeAccountID,
+		DisabledReason:  res.DisabledReason,
+		OccurredAt:      res.OccurredAt,
+	}
+}
+
+func (m *mapper) ToGetPaymentByOrderResponse(res *app.GetPaymentByOrderResult) *paymentcheckoutv1.GetPaymentByOrderIdResponse {
+	return &paymentcheckoutv1.GetPaymentByOrderIdResponse{
+		PaymentId:   res.PaymentID,
+		AmountCents: res.AmountCents,
+		Currency:    res.Currency,
+		CreatedAt:   res.CreatedAt,
+		UpdatedAt:   res.UpdatedAt,
 	}
 }
