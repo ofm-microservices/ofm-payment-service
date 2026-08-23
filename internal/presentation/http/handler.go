@@ -13,6 +13,92 @@ import (
 	"github.com/stripe/stripe-go/v85/webhook"
 )
 
+func (s *server) handleFakePaymentWebhook(c *fiber.Ctx) error {
+	var evt application.WebhookCommand
+	if err := json.Unmarshal(c.Body(), &evt); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid fake webhook"})
+	}
+	if evt.EventID == "" {
+		evt.EventID = "evt_fake_payment"
+	}
+	if evt.Provider == "" {
+		evt.Provider = "fake-stripe"
+	}
+	if err := s.app.HandleWebhook(c.Context(), evt); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.SendStatus(fiber.StatusAccepted)
+}
+
+func (s *server) handleFakePaymentLifecycle(c *fiber.Ctx) error {
+	var cmd application.CreateIntentCommand
+	if err := json.Unmarshal(c.Body(), &cmd); err != nil || cmd.OrderID == "" || cmd.IntentID == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "intent_id and order_id are required"})
+	}
+	if cmd.AmountCents <= 0 {
+		cmd.AmountCents = 100
+	}
+	if cmd.Currency == "" {
+		cmd.Currency = "usd"
+	}
+	if cmd.Provider == "" {
+		cmd.Provider = "fake-stripe"
+	}
+	created, err := s.app.CreateIntent(c.Context(), cmd)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	status := c.Query("status", "captured")
+	if err := s.app.HandleWebhook(c.Context(), application.WebhookCommand{
+		EventID:  "evt_fake_" + cmd.IntentID,
+		Provider: "fake-stripe", EventType: "payment_intent." + status,
+		IntentID: created.ProviderIntentID, ProviderIntentID: created.ProviderIntentID,
+		OrderID: cmd.OrderID, SagaID: cmd.SagaID, Status: status,
+	}); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.Status(fiber.StatusAccepted).JSON(fiber.Map{"intent": created, "webhook_status": status})
+}
+
+func (s *server) handleFakeConnectWebhook(c *fiber.Ctx) error {
+	var evt application.ConnectWebhookCommand
+	if err := json.Unmarshal(c.Body(), &evt); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid fake webhook"})
+	}
+	if evt.EventID == "" {
+		evt.EventID = "evt_fake_connect"
+	}
+	if evt.Provider == "" {
+		evt.Provider = "fake-stripe"
+	}
+	if err := s.app.HandleConnectWebhook(c.Context(), evt); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.SendStatus(fiber.StatusAccepted)
+}
+
+func (s *server) handleConnectReturn(c *fiber.Ctx) error {
+	s.log.Info("stripe connect return callback received",
+		logging.Operation("http.connect.return"),
+		logging.String("status", "returned"),
+	)
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{
+		"status":  "returned",
+		"message": "Stripe Connect onboarding returned. Account status is finalized by webhook.",
+	})
+}
+
+func (s *server) handleConnectRefresh(c *fiber.Ctx) error {
+	s.log.Info("stripe connect refresh callback received",
+		logging.Operation("http.connect.refresh"),
+		logging.String("status", "refresh_required"),
+	)
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{
+		"status":  "refresh_required",
+		"message": "Create a new Stripe Connect onboarding link and retry.",
+	})
+}
+
 func (s *server) handleWebhook(c *fiber.Ctx) error {
 	event, err := webhook.ConstructEvent(c.Body(), c.Get("Stripe-Signature"), s.stripe.CheckoutWebhookSecret)
 	if err != nil {

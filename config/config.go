@@ -10,7 +10,7 @@ type Config struct {
 	App     AppConfig
 	DB      DBConfig
 	Redis   RedisConfig
-	NATS    NATSConfig
+	Kafka   KafkaConfig
 	HTTP    HTTPConfig
 	GRPC    GRPCConfig
 	Metrics MetricsConfig

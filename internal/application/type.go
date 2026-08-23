@@ -44,7 +44,7 @@ type StripeConnectGateway interface {
 	CreateRefund(ctx context.Context, paymentIntentID string, amountCents int64, idempotencyKey string) (string, error)
 }
 
-// EventBroker abstracts the runtime NATS broker.
+// EventBroker abstracts the runtime Kafka broker.
 type EventBroker interface {
 	Publish(ctx context.Context, subject string, payload []byte) error
 	Subscribe(ctx context.Context, subject string, handler MessageHandler) error

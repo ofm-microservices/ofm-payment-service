@@ -26,11 +26,12 @@ type service struct {
 	projectionSubject string
 	stripe            StripeConnectGateway
 	skipTransfers     bool
+	fakeStripe        bool
 	log               Logger
 }
 
 // New constructs the payment application service.
-func New(intents IntentRepository, webhooks WebhookRepository, read PaymentIntentReadRepository, accounts ConnectAccountRepository, releases PaymentReleaseRepository, broker EventBroker, projectionSubject string, stripe StripeConnectGateway, skipTransfers bool, log Logger) (Service, error) {
+func New(intents IntentRepository, webhooks WebhookRepository, read PaymentIntentReadRepository, accounts ConnectAccountRepository, releases PaymentReleaseRepository, broker EventBroker, projectionSubject string, stripe StripeConnectGateway, skipTransfers bool, fakeStripe bool, log Logger) (Service, error) {
 	if intents == nil {
 		return nil, ErrNilIntentRepository
 	}
@@ -58,7 +59,7 @@ func New(intents IntentRepository, webhooks WebhookRepository, read PaymentInten
 	if log == nil {
 		return nil, ErrNilLogger
 	}
-	return &service{intents: intents, webhooks: webhooks, read: read, accounts: accounts, releases: releases, broker: broker, projectionSubject: projectionSubject, stripe: stripe, skipTransfers: skipTransfers, log: log.With(logging.String("module", "application"))}, nil
+	return &service{intents: intents, webhooks: webhooks, read: read, accounts: accounts, releases: releases, broker: broker, projectionSubject: projectionSubject, stripe: stripe, skipTransfers: skipTransfers, fakeStripe: fakeStripe, log: log.With(logging.String("module", "application"))}, nil
 }
 
 func (s *service) CreateIntent(ctx context.Context, cmd CreateIntentCommand) (*CreateIntentResult, error) {
@@ -75,6 +76,19 @@ func (s *service) CreateIntent(ctx context.Context, cmd CreateIntentCommand) (*C
 	}
 	if _, err := s.intents.Create(ctx, intent); err != nil {
 		return nil, err
+	}
+	if s.fakeStripe {
+		intent.ProviderIntentID = "pi_fake_" + strings.ReplaceAll(cmd.IntentID, "-", "")
+		intent.CheckoutURL = "http://fake-stripe.local/checkout/" + cmd.IntentID
+		_ = s.intents.UpdateCheckoutURL(ctx, intent.IntentID, intent.CheckoutURL)
+		_ = s.intents.UpdateStatus(ctx, intent.IntentID, domain.PaymentStatusIntentCreated)
+		if created, err := s.intents.GetByID(ctx, intent.IntentID); err == nil {
+			created.CheckoutURL = intent.CheckoutURL
+			created.ProviderIntentID = intent.ProviderIntentID
+			created.Status = domain.PaymentStatusIntentCreated
+			_ = s.read.Upsert(ctx, created)
+		}
+		return &CreateIntentResult{IntentID: cmd.IntentID, SagaID: cmd.SagaID, OrderID: cmd.OrderID, ProviderIntentID: intent.ProviderIntentID, CheckoutURL: intent.CheckoutURL, Status: domain.PaymentStatusIntentCreated, OccurredAt: now.Format(time.RFC3339Nano)}, nil
 	}
 	session, err := checkoutsession.New(&stripe.CheckoutSessionParams{
 		Mode:              stripe.String(string(stripe.CheckoutSessionModePayment)),

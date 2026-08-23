@@ -6,7 +6,7 @@ import (
 	"payment-service/config"
 	app "payment-service/internal/application"
 	eventbroker "payment-service/internal/presentation/event_broker"
-	events "payment-service/internal/presentation/event_broker/nats"
+	events "payment-service/internal/presentation/event_broker/kafka"
 	gatewaygrpc "payment-service/internal/presentation/grpc"
 	webhookhttp "payment-service/internal/presentation/http"
 
@@ -14,7 +14,7 @@ import (
 	"go.uber.org/fx"
 )
 
-// PresentationModule wires the HTTP webhook adapter and NATS background
+// PresentationModule wires the HTTP webhook adapter and Kafka background
 // subscribers into the FX lifecycle.
 var PresentationModule = fx.Options(
 	fx.Provide(
@@ -31,18 +31,18 @@ var PresentationModule = fx.Options(
 	),
 )
 
-// ProvidePaymentIntentSubscriber constructs the NATS subscriber used to
+// ProvidePaymentIntentSubscriber constructs the Kafka subscriber used to
 // consume payment-intent commands.
 func ProvidePaymentIntentSubscriber(broker eventbroker.EventBroker, service app.Service, cfg *config.Config, lg logging.Logger) (events.PaymentIntentSubscriber, error) {
 	_ = lg
-	return events.NewPaymentIntentSubscriber(broker, service, cfg.NATS)
+	return events.NewPaymentIntentSubscriber(broker, service, cfg.Kafka)
 }
 
-// ProvidePaymentProjectionSubscriber constructs the NATS subscriber used to
+// ProvidePaymentProjectionSubscriber constructs the Kafka subscriber used to
 // repair order-keyed payment projections.
 func ProvidePaymentProjectionSubscriber(broker eventbroker.EventBroker, service app.Service, cfg *config.Config, lg logging.Logger) (events.PaymentProjectionSubscriber, error) {
 	_ = lg
-	return events.NewPaymentProjectionSubscriber(broker, service, cfg.NATS)
+	return events.NewPaymentProjectionSubscriber(broker, service, cfg.Kafka)
 }
 
 // ProvideWebhookServer constructs the Stripe webhook HTTP server.
@@ -55,7 +55,7 @@ func ProvideOnboardingGRPCServer(service app.Service, cfg *config.Config, lg log
 	return gatewaygrpc.NewServer(service, cfg.GRPC, lg)
 }
 
-// InvokeSubscribePaymentIntent starts the NATS subscriber with the FX
+// InvokeSubscribePaymentIntent starts the Kafka subscriber with the FX
 // lifecycle.
 func InvokeSubscribePaymentIntent(lc fx.Lifecycle, subscriber events.PaymentIntentSubscriber, cfg *config.Config, lg logging.Logger) {
 	var cancel context.CancelFunc
@@ -63,11 +63,11 @@ func InvokeSubscribePaymentIntent(lc fx.Lifecycle, subscriber events.PaymentInte
 		OnStart: func(context.Context) error {
 			runCtx, runCancel := context.WithCancel(context.Background())
 			cancel = runCancel
-			if err := subscriber.Subscribe(runCtx); err != nil {
-				lg.Error("subscribe to payment intent commands failed", logging.Err(err))
-				cancel()
-				return err
-			}
+			go func() {
+				if err := subscriber.Subscribe(runCtx); err != nil && runCtx.Err() == nil {
+					lg.Error("subscribe to payment intent commands failed", logging.Err(err))
+				}
+			}()
 			lg.Info("payment-service initialized", logging.String("env", cfg.App.Env))
 			return nil
 		},
@@ -80,7 +80,7 @@ func InvokeSubscribePaymentIntent(lc fx.Lifecycle, subscriber events.PaymentInte
 	})
 }
 
-// InvokeSubscribePaymentProjection starts the payment projection subscriber
+// InvokeSubscribePaymentProjection starts the Kafka payment projection subscriber
 // with the FX lifecycle.
 func InvokeSubscribePaymentProjection(lc fx.Lifecycle, subscriber events.PaymentProjectionSubscriber, cfg *config.Config, lg logging.Logger) {
 	var cancel context.CancelFunc
@@ -88,11 +88,11 @@ func InvokeSubscribePaymentProjection(lc fx.Lifecycle, subscriber events.Payment
 		OnStart: func(context.Context) error {
 			runCtx, runCancel := context.WithCancel(context.Background())
 			cancel = runCancel
-			if err := subscriber.Subscribe(runCtx); err != nil {
-				lg.Error("subscribe to payment projection repair jobs failed", logging.Err(err))
-				cancel()
-				return err
-			}
+			go func() {
+				if err := subscriber.Subscribe(runCtx); err != nil && runCtx.Err() == nil {
+					lg.Error("subscribe to payment projection repair jobs failed", logging.Err(err))
+				}
+			}()
 			return nil
 		},
 		OnStop: func(context.Context) error {
