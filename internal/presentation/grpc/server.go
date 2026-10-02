@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/ofm-microservices/ofm-common/pkg/logging"
+	transportgrpc "github.com/ofm-microservices/ofm-common/pkg/observability/grpc"
 	"github.com/ofm-microservices/ofm-common/pkg/observability/metrics"
 	paymentcheckoutv1 "github.com/ofm-microservices/ofm-common/proto/paymentcheckout/v1"
 	paymentconnectv1 "github.com/ofm-microservices/ofm-common/proto/paymentconnect/v1"
@@ -39,7 +40,7 @@ func NewServer(svc app.Service, cfg config.GRPCConfig, log logging.Logger) (Serv
 	}
 	grpcSrv := grpcpkg.NewServer(
 		grpcpkg.StatsHandler(otelgrpc.NewServerHandler()),
-		grpcpkg.UnaryInterceptor(metrics.UnaryServerInterceptor()),
+		grpcpkg.ChainUnaryInterceptor(metrics.UnaryServerInterceptor(), transportgrpc.UnaryServerInterceptor(log)),
 	)
 	s := &server{
 		svc:  svc,

@@ -12,5 +12,6 @@ var (
 	ErrNilPaymentReleaseRepository = errors.New("payment release repository is nil")
 	ErrNilStripeConnectGateway     = errors.New("stripe connect gateway is nil")
 	ErrNilLogger                   = errors.New("logger is nil")
+	ErrNilConnectAccountLock       = errors.New("connect account lock is nil")
 	ErrPublishEvent                = errors.New("publish event failed")
 )

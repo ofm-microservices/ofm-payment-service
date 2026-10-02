@@ -32,6 +32,7 @@ func NewServer(svc app.Service, cfg config.HTTPConfig, stripeCfg config.StripeCo
 		return nil, fmt.Errorf("logger is nil")
 	}
 	fapp := fiber.New()
+	fapp.Use(transportLoggingMiddleware(log))
 	s := &server{app: svc, cfg: cfg, stripe: stripeCfg, log: log.With(logging.String("module", "http-webhook")), fapp: fapp}
 	fapp.Post("/v1/payments/webhook", s.handleWebhook)
 	fapp.Post("/v1/freelancer/onboarding/webhook", s.handleConnectWebhook)
