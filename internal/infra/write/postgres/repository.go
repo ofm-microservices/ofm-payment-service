@@ -1,11 +1,11 @@
-package yugabyte
+package postgres
 
 import (
 	"context"
 	"time"
 
 	"payment-service/internal/domain"
-	"payment-service/internal/infra/write/yugabyte/model"
+	"payment-service/internal/infra/write/postgres/model"
 
 	"github.com/jmoiron/sqlx"
 	"github.com/ofm-microservices/ofm-common/pkg/logging"
@@ -18,10 +18,10 @@ type repo struct {
 	log        logging.Logger
 }
 
-// New constructs the Yugabyte-backed payment repository.
+// New constructs the PostgreSQL-backed payment repository.
 func New(db *sqlx.DB, translator DBErrorTranslator, log logging.Logger) (domain.PaymentIntentRepository, error) {
 	if db == nil {
-		return nil, ErrNilYugaByteDB
+		return nil, ErrNilPostgresDB
 	}
 	if translator == nil {
 		return nil, ErrNilDBErrorTranslator
@@ -29,7 +29,7 @@ func New(db *sqlx.DB, translator DBErrorTranslator, log logging.Logger) (domain.
 	if log == nil {
 		return nil, ErrNilLogger
 	}
-	return &repo{db: db, translator: translator, log: log.With(logging.String("module", "yugabyte-repository"))}, nil
+	return &repo{db: db, translator: translator, log: log.With(logging.String("module", "postgres-repository"))}, nil
 }
 
 const createPaymentIntentQuery = `
@@ -66,7 +66,7 @@ func (r *repo) Create(ctx context.Context, intent domain.PaymentIntent) (*domain
 	started := time.Now()
 	status := "success"
 	defer func() {
-		metrics.Global().ObserveDB("yugabyte", "create", "payment_intents", status, time.Since(started))
+		metrics.Global().ObserveDB("postgres", "create", "payment_intents", status, time.Since(started))
 	}()
 
 	var row model.PaymentIntentRow
@@ -100,7 +100,7 @@ func (r *repo) GetByID(ctx context.Context, intentID string) (*domain.PaymentInt
 	started := time.Now()
 	status := "success"
 	defer func() {
-		metrics.Global().ObserveDB("yugabyte", "get_by_id", "payment_intents", status, time.Since(started))
+		metrics.Global().ObserveDB("postgres", "get_by_id", "payment_intents", status, time.Since(started))
 	}()
 
 	var row model.PaymentIntentRow
@@ -131,7 +131,7 @@ func (r *repo) GetByOrderID(ctx context.Context, orderID string) (*domain.Paymen
 	started := time.Now()
 	status := "success"
 	defer func() {
-		metrics.Global().ObserveDB("yugabyte", "get_by_order_id", "payment_intents", status, time.Since(started))
+		metrics.Global().ObserveDB("postgres", "get_by_order_id", "payment_intents", status, time.Since(started))
 	}()
 
 	var row model.PaymentIntentRow
@@ -162,7 +162,7 @@ func (r *repo) UpdateWebhookPaymentIntent(ctx context.Context, orderID, provider
 	started := time.Now()
 	status := "success"
 	defer func() {
-		metrics.Global().ObserveDB("yugabyte", "update_webhook_payment_intent", "payment_intents", status, time.Since(started))
+		metrics.Global().ObserveDB("postgres", "update_webhook_payment_intent", "payment_intents", status, time.Since(started))
 	}()
 
 	var row model.PaymentIntentRow
@@ -194,7 +194,7 @@ func (r *repo) UpdateStatus(ctx context.Context, intentID, statusValue string) e
 	started := time.Now()
 	status := "success"
 	defer func() {
-		metrics.Global().ObserveDB("yugabyte", "update_status", "payment_intents", status, time.Since(started))
+		metrics.Global().ObserveDB("postgres", "update_status", "payment_intents", status, time.Since(started))
 	}()
 
 	if _, err := r.db.ExecContext(ctx, updatePaymentIntentStatusQuery, intentID, statusValue); err != nil {
@@ -216,7 +216,7 @@ func (r *repo) UpdateCheckoutURL(ctx context.Context, intentID, checkoutURL stri
 	started := time.Now()
 	status := "success"
 	defer func() {
-		metrics.Global().ObserveDB("yugabyte", "update_checkout_url", "payment_intents", status, time.Since(started))
+		metrics.Global().ObserveDB("postgres", "update_checkout_url", "payment_intents", status, time.Since(started))
 	}()
 
 	if _, err := r.db.ExecContext(ctx, updatePaymentIntentCheckoutURLQuery, intentID, checkoutURL); err != nil {
@@ -241,10 +241,10 @@ type PaymentReleaseRepo struct {
 	log        logging.Logger
 }
 
-// NewPaymentReleaseRepo constructs the Yugabyte-backed payment release repository.
+// NewPaymentReleaseRepo constructs the PostgreSQL-backed payment release repository.
 func NewPaymentReleaseRepo(db *sqlx.DB, translator DBErrorTranslator, log logging.Logger) (domain.PaymentReleaseRepository, error) {
 	if db == nil {
-		return nil, ErrNilYugaByteDB
+		return nil, ErrNilPostgresDB
 	}
 	if translator == nil {
 		return nil, ErrNilDBErrorTranslator
@@ -252,7 +252,7 @@ func NewPaymentReleaseRepo(db *sqlx.DB, translator DBErrorTranslator, log loggin
 	if log == nil {
 		return nil, ErrNilLogger
 	}
-	return &PaymentReleaseRepo{db: db, translator: translator, log: log.With(logging.String("module", "yugabyte-payment-release-repository"))}, nil
+	return &PaymentReleaseRepo{db: db, translator: translator, log: log.With(logging.String("module", "postgres-payment-release-repository"))}, nil
 }
 
 const createPaymentReleaseQuery = `
@@ -297,7 +297,7 @@ func (r *PaymentReleaseRepo) Create(ctx context.Context, release domain.PaymentR
 	started := time.Now()
 	status := "success"
 	defer func() {
-		metrics.Global().ObserveDB("yugabyte", "create", "payment_releases", status, time.Since(started))
+		metrics.Global().ObserveDB("postgres", "create", "payment_releases", status, time.Since(started))
 	}()
 	var row model.PaymentReleaseRow
 	if err := r.db.QueryRowContext(ctx, createPaymentReleaseQuery,
@@ -347,7 +347,7 @@ func (r *PaymentReleaseRepo) GetByOrderID(ctx context.Context, orderID string) (
 	started := time.Now()
 	status := "success"
 	defer func() {
-		metrics.Global().ObserveDB("yugabyte", "get_by_order_id", "payment_releases", status, time.Since(started))
+		metrics.Global().ObserveDB("postgres", "get_by_order_id", "payment_releases", status, time.Since(started))
 	}()
 	var row model.PaymentReleaseRow
 	if err := r.db.QueryRowContext(ctx, getPaymentReleaseByOrderIDQuery, orderID).Scan(
@@ -384,7 +384,7 @@ func (r *PaymentReleaseRepo) UpdateStatus(ctx context.Context, releaseID, status
 	started := time.Now()
 	status := "success"
 	defer func() {
-		metrics.Global().ObserveDB("yugabyte", "update_status", "payment_releases", status, time.Since(started))
+		metrics.Global().ObserveDB("postgres", "update_status", "payment_releases", status, time.Since(started))
 	}()
 	if _, err := r.db.ExecContext(ctx, updatePaymentReleaseStatusQuery, releaseID, statusValue, transferID, failureReason); err != nil {
 		status = "error"
@@ -408,10 +408,10 @@ type WebhookRepo struct {
 	log        logging.Logger
 }
 
-// NewWebhookRepo constructs the Yugabyte-backed webhook repository.
+// NewWebhookRepo constructs the PostgreSQL-backed webhook repository.
 func NewWebhookRepo(db *sqlx.DB, translator DBErrorTranslator, log logging.Logger) (domain.WebhookRepository, error) {
 	if db == nil {
-		return nil, ErrNilYugaByteDB
+		return nil, ErrNilPostgresDB
 	}
 	if translator == nil {
 		return nil, ErrNilDBErrorTranslator
@@ -419,14 +419,14 @@ func NewWebhookRepo(db *sqlx.DB, translator DBErrorTranslator, log logging.Logge
 	if log == nil {
 		return nil, ErrNilLogger
 	}
-	return &WebhookRepo{db: db, translator: translator, log: log.With(logging.String("module", "yugabyte-webhook-repository"))}, nil
+	return &WebhookRepo{db: db, translator: translator, log: log.With(logging.String("module", "postgres-webhook-repository"))}, nil
 }
 
 func (r *WebhookRepo) Create(ctx context.Context, evt domain.WebhookEvent) (*domain.WebhookEvent, error) {
 	started := time.Now()
 	status := "success"
 	defer func() {
-		metrics.Global().ObserveDB("yugabyte", "create", "payment_webhook_events", status, time.Since(started))
+		metrics.Global().ObserveDB("postgres", "create", "payment_webhook_events", status, time.Since(started))
 	}()
 
 	var row model.WebhookRow
@@ -446,7 +446,7 @@ func (r *WebhookRepo) Exists(ctx context.Context, eventID string) (bool, error) 
 	started := time.Now()
 	status := "success"
 	defer func() {
-		metrics.Global().ObserveDB("yugabyte", "exists", "payment_webhook_events", status, time.Since(started))
+		metrics.Global().ObserveDB("postgres", "exists", "payment_webhook_events", status, time.Since(started))
 	}()
 
 	var exists bool

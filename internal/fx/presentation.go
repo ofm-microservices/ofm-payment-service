@@ -2,6 +2,7 @@ package appfx
 
 import (
 	"context"
+	"time"
 
 	"payment-service/config"
 	app "payment-service/internal/application"
@@ -20,16 +21,52 @@ var PresentationModule = fx.Options(
 	fx.Provide(
 		ProvidePaymentIntentSubscriber,
 		ProvidePaymentProjectionSubscriber,
+		ProvideRecoverySubscriber,
 		ProvideOnboardingGRPCServer,
 		ProvideWebhookServer,
 	),
 	fx.Invoke(
 		InvokeSubscribePaymentIntent,
 		InvokeSubscribePaymentProjection,
+		InvokeSubscribeRecovery,
 		InvokeRunOnboardingGRPCServer,
 		InvokeRunWebhookServer,
 	),
 )
+
+// ProvideRecoverySubscriber constructs the payment-owned migration consumer.
+func ProvideRecoverySubscriber(broker eventbroker.EventBroker, svc app.Service, cfg *config.Config, lg logging.Logger) (events.RecoverySubscriber, error) {
+	return events.NewRecoverySubscriber(broker, svc, cfg.Kafka, lg)
+}
+
+// InvokeSubscribeRecovery starts payment recovery consumption during startup.
+func InvokeSubscribeRecovery(lc fx.Lifecycle, sub events.RecoverySubscriber, lg logging.Logger) {
+	var cancel context.CancelFunc
+	lc.Append(fx.Hook{OnStart: func(context.Context) error {
+		ctx, stop := context.WithCancel(context.Background())
+		cancel = stop
+		go func() {
+			for ctx.Err() == nil {
+				if err := sub.Subscribe(ctx); err != nil && ctx.Err() == nil {
+					lg.Error("payment recovery consumer stopped; retrying", logging.Err(err))
+					timer := time.NewTimer(time.Second)
+					select {
+					case <-ctx.Done():
+						timer.Stop()
+						return
+					case <-timer.C:
+					}
+				}
+			}
+		}()
+		return nil
+	}, OnStop: func(context.Context) error {
+		if cancel != nil {
+			cancel()
+		}
+		return nil
+	}})
+}
 
 // ProvidePaymentIntentSubscriber constructs the Kafka subscriber used to
 // consume payment-intent commands.

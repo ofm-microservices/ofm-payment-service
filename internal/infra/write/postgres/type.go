@@ -1,4 +1,4 @@
-package yugabyte
+package postgres
 
 // DBErrorTranslator maps storage-driver failures into domain-aware repository
 // errors.

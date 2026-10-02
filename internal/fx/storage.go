@@ -5,7 +5,7 @@ import (
 
 	"payment-service/config"
 	rdb "payment-service/pkg/storage/redis"
-	ydb "payment-service/pkg/storage/yugabyte"
+	ydb "payment-service/pkg/storage/postgres"
 
 	"github.com/jmoiron/sqlx"
 	"github.com/ofm-microservices/ofm-common/pkg/logging"
@@ -17,7 +17,7 @@ import (
 // and migrations into the FX graph.
 var StorageModule = fx.Options(
 	fx.Invoke(InvokeRunMigrations),
-	fx.Provide(ProvideYugaByteDB, ProvideRedisClient),
+	fx.Provide(ProvidePostgresDB, ProvideRedisClient),
 )
 
 // InvokeRunMigrations applies the payment-service write-model migrations.
@@ -30,8 +30,8 @@ func InvokeRunMigrations(cfg *config.Config, lg logging.Logger) error {
 	return nil
 }
 
-// ProvideYugaByteDB opens the YugabyteDB connection owned by payment-service.
-func ProvideYugaByteDB(lc fx.Lifecycle, cfg *config.Config, lg logging.Logger) (*sqlx.DB, error) {
+// ProvidePostgresDB opens the PostgreSQL connection owned by payment-service.
+func ProvidePostgresDB(lc fx.Lifecycle, cfg *config.Config, lg logging.Logger) (*sqlx.DB, error) {
 	dbx, err := ydb.Open(cfg.DB)
 	if err != nil {
 		lg.Error("open database failed", logging.Err(err))

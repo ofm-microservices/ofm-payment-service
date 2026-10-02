@@ -1,11 +1,11 @@
-package yugabyte
+package postgres
 
 import (
 	"context"
 	"time"
 
 	"payment-service/internal/domain"
-	"payment-service/internal/infra/write/yugabyte/model"
+	"payment-service/internal/infra/write/postgres/model"
 
 	"github.com/jmoiron/sqlx"
 	"github.com/ofm-microservices/ofm-common/pkg/logging"
@@ -18,10 +18,10 @@ type connectAccountRepo struct {
 	log        logging.Logger
 }
 
-// NewConnectAccountRepo constructs the Yugabyte-backed Stripe Connect onboarding repository.
+// NewConnectAccountRepo constructs the PostgreSQL-backed Stripe Connect onboarding repository.
 func NewConnectAccountRepo(db *sqlx.DB, translator DBErrorTranslator, log logging.Logger) (domain.ConnectAccountRepository, error) {
 	if db == nil {
-		return nil, ErrNilYugaByteDB
+		return nil, ErrNilPostgresDB
 	}
 	if translator == nil {
 		return nil, ErrNilDBErrorTranslator
@@ -29,7 +29,7 @@ func NewConnectAccountRepo(db *sqlx.DB, translator DBErrorTranslator, log loggin
 	if log == nil {
 		return nil, ErrNilLogger
 	}
-	return &connectAccountRepo{db: db, translator: translator, log: log.With(logging.String("module", "yugabyte-connect-account-repository"))}, nil
+	return &connectAccountRepo{db: db, translator: translator, log: log.With(logging.String("module", "postgres-connect-account-repository"))}, nil
 }
 
 const upsertConnectAccountQuery = `
@@ -76,7 +76,7 @@ func (r *connectAccountRepo) Upsert(ctx context.Context, account domain.ConnectA
 	started := time.Now()
 	status := "success"
 	defer func() {
-		metrics.Global().ObserveDB("yugabyte", "upsert", "connect_accounts", status, time.Since(started))
+		metrics.Global().ObserveDB("postgres", "upsert", "connect_accounts", status, time.Since(started))
 	}()
 
 	row := model.ConnectAccountRow{
@@ -125,7 +125,7 @@ func (r *connectAccountRepo) GetByUserID(ctx context.Context, userID string) (*d
 	started := time.Now()
 	status := "success"
 	defer func() {
-		metrics.Global().ObserveDB("yugabyte", "get_by_user_id", "connect_accounts", status, time.Since(started))
+		metrics.Global().ObserveDB("postgres", "get_by_user_id", "connect_accounts", status, time.Since(started))
 	}()
 
 	var row model.ConnectAccountRow
@@ -153,7 +153,7 @@ func (r *connectAccountRepo) GetByStripeAccountID(ctx context.Context, accountID
 	started := time.Now()
 	status := "success"
 	defer func() {
-		metrics.Global().ObserveDB("yugabyte", "get_by_stripe_account_id", "connect_accounts", status, time.Since(started))
+		metrics.Global().ObserveDB("postgres", "get_by_stripe_account_id", "connect_accounts", status, time.Since(started))
 	}()
 
 	var row model.ConnectAccountRow

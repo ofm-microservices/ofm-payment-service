@@ -2,7 +2,7 @@ package model
 
 import "time"
 
-// PaymentIntentRow is the Yugabyte persistence model for payment intents.
+// PaymentIntentRow is the PostgreSQL persistence model for payment intents.
 type PaymentIntentRow struct {
 	IntentID         string    `db:"payment_intent_id"`
 	OrderID          string    `db:"order_id"`
