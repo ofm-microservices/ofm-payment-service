@@ -2,7 +2,7 @@ package model
 
 import "time"
 
-// WebhookRow is the Yugabyte persistence model for deduplicated webhooks.
+// WebhookRow is the PostgreSQL persistence model for deduplicated webhooks.
 type WebhookRow struct {
 	EventID   string    `db:"event_id"`
 	Provider  string    `db:"provider"`
