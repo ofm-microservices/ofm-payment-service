@@ -11,5 +11,4 @@ type StripeConfig struct {
 	ConnectReturnURL                  string `env:"STRIPE_CONNECT_RETURN_URL,required"`
 	ConnectRefreshURL                 string `env:"STRIPE_CONNECT_REFRESH_URL,required"`
 	ConnectCountry                    string `env:"STRIPE_CONNECT_COUNTRY" envDefault:"US"`
-	SkipTransfers                     bool   `env:"STRIPE_SKIP_TRANSFERS" envDefault:"false"`
 }
