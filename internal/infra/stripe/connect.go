@@ -10,6 +10,7 @@ import (
 	"payment-service/internal/domain"
 
 	"github.com/ofm-microservices/ofm-common/pkg/logging"
+	"github.com/ofm-microservices/ofm-common/pkg/resilience"
 	stripec "github.com/stripe/stripe-go/v85"
 	account "github.com/stripe/stripe-go/v85/account"
 	accountlink "github.com/stripe/stripe-go/v85/accountlink"
@@ -18,8 +19,9 @@ import (
 )
 
 type gateway struct {
-	cfg config.StripeConfig
-	log logging.Logger
+	cfg     config.StripeConfig
+	log     logging.Logger
+	breaker *resilience.Breaker
 }
 
 // New constructs the Stripe Connect adapter used by payment-service.
@@ -31,11 +33,10 @@ func New(cfg config.StripeConfig, log logging.Logger) (app.StripeConnectGateway,
 		return nil, ErrNilLogger
 	}
 	stripec.Key = cfg.SecretKey
-	return &gateway{cfg: cfg, log: log.With(logging.String("module", "stripe-connect-gateway"))}, nil
+	return &gateway{cfg: cfg, log: log.With(logging.String("module", "stripe-connect-gateway")), breaker: resilience.NewBreaker(resilience.BreakerConfigFromEnv())}, nil
 }
 
 func (g *gateway) CreateAccount(ctx context.Context, cmd app.StartFreelancerOnboardingCommand) (*domain.ConnectAccount, error) {
-	_ = ctx
 	params := &stripec.AccountParams{
 		Country:      stripec.String(firstNonEmpty(cmd.Country, g.cfg.ConnectCountry)),
 		Type:         stripec.String(string(stripec.AccountTypeExpress)),
@@ -45,7 +46,12 @@ func (g *gateway) CreateAccount(ctx context.Context, cmd app.StartFreelancerOnbo
 		},
 	}
 	params.SetIdempotencyKey("freelancer-onboarding-account:" + strings.TrimSpace(cmd.UserID))
-	acct, err := account.New(params)
+	var acct *stripec.Account
+	err := g.breaker.Do(ctx, func(context.Context) error {
+		var err error
+		acct, err = account.New(params)
+		return err
+	})
 	if err != nil {
 		g.log.Error("stripe api failed",
 			logging.Operation("stripe.connect.create_account"),
@@ -65,12 +71,16 @@ func (g *gateway) CreateAccount(ctx context.Context, cmd app.StartFreelancerOnbo
 }
 
 func (g *gateway) CreateOnboardingLink(ctx context.Context, accountID, returnURL, refreshURL string) (string, error) {
-	_ = ctx
-	link, err := accountlink.New(&stripec.AccountLinkParams{
-		Account:    stripec.String(accountID),
-		ReturnURL:  stripec.String(firstNonEmpty(returnURL, g.cfg.ConnectReturnURL)),
-		RefreshURL: stripec.String(firstNonEmpty(refreshURL, g.cfg.ConnectRefreshURL)),
-		Type:       stripec.String(string(stripec.AccountLinkTypeAccountOnboarding)),
+	var link *stripec.AccountLink
+	err := g.breaker.Do(ctx, func(context.Context) error {
+		var err error
+		link, err = accountlink.New(&stripec.AccountLinkParams{
+			Account:    stripec.String(accountID),
+			ReturnURL:  stripec.String(firstNonEmpty(returnURL, g.cfg.ConnectReturnURL)),
+			RefreshURL: stripec.String(firstNonEmpty(refreshURL, g.cfg.ConnectRefreshURL)),
+			Type:       stripec.String(string(stripec.AccountLinkTypeAccountOnboarding)),
+		})
+		return err
 	})
 	if err != nil {
 		g.log.Error("stripe api failed",
@@ -84,7 +94,6 @@ func (g *gateway) CreateOnboardingLink(ctx context.Context, accountID, returnURL
 }
 
 func (g *gateway) CreateTransfer(ctx context.Context, cmd app.ReleaseFundsCommand, destinationAccountID string) (string, error) {
-	_ = ctx
 	amount := cmd.AmountCents
 	if amount <= 0 {
 		return "", ErrCreateAccount
@@ -97,7 +106,12 @@ func (g *gateway) CreateTransfer(ctx context.Context, cmd app.ReleaseFundsComman
 		TransferGroup: stripec.String(strings.TrimSpace(cmd.OrderID)),
 	}
 	params.SetIdempotencyKey(firstNonEmpty(cmd.IdempotencyKey, "order-release:"+strings.TrimSpace(cmd.OrderID)))
-	transferObj, err := transfer.New(params)
+	var transferObj *stripec.Transfer
+	err := g.breaker.Do(ctx, func(context.Context) error {
+		var err error
+		transferObj, err = transfer.New(params)
+		return err
+	})
 	if err != nil {
 		g.log.Error("stripe api failed",
 			logging.Operation("stripe.connect.create_transfer"),
@@ -111,7 +125,6 @@ func (g *gateway) CreateTransfer(ctx context.Context, cmd app.ReleaseFundsComman
 }
 
 func (g *gateway) CreateRefund(ctx context.Context, paymentIntentID string, amountCents int64, idempotencyKey string) (string, error) {
-	_ = ctx
 	if amountCents <= 0 {
 		return "", nil
 	}
@@ -120,7 +133,12 @@ func (g *gateway) CreateRefund(ctx context.Context, paymentIntentID string, amou
 		Amount:        stripec.Int64(amountCents),
 	}
 	params.SetIdempotencyKey(firstNonEmpty(idempotencyKey, "order-refund:"+strings.TrimSpace(paymentIntentID)))
-	refundObj, err := refund.New(params)
+	var refundObj *stripec.Refund
+	err := g.breaker.Do(ctx, func(context.Context) error {
+		var err error
+		refundObj, err = refund.New(params)
+		return err
+	})
 	if err != nil {
 		g.log.Error("stripe api failed",
 			logging.Operation("stripe.connect.create_refund"),

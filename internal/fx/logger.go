@@ -10,5 +10,5 @@ import (
 var LoggerModule = fx.Provide(ProvideLogger)
 
 func ProvideLogger(cfg *config.Config) (logging.Logger, error) {
-	return logging.New(cfg.App.Name, cfg.App.Env, cfg.App.LogLevel)
+	return logging.NewWithMode(cfg.App.Name, cfg.App.Env, cfg.App.ObservabilityMode, cfg.App.LogLevel)
 }

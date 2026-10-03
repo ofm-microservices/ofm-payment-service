@@ -44,7 +44,12 @@ type StripeConnectGateway interface {
 	CreateRefund(ctx context.Context, paymentIntentID string, amountCents int64, idempotencyKey string) (string, error)
 }
 
-// EventBroker abstracts the runtime NATS broker.
+// ConnectAccountLock serializes onboarding mutations for one user across replicas.
+type ConnectAccountLock interface {
+	Acquire(ctx context.Context, userID string) (func(), error)
+}
+
+// EventBroker abstracts the runtime Kafka broker.
 type EventBroker interface {
 	Publish(ctx context.Context, subject string, payload []byte) error
 	Subscribe(ctx context.Context, subject string, handler MessageHandler) error

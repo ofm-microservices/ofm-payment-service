@@ -25,12 +25,13 @@ type service struct {
 	broker            EventBroker
 	projectionSubject string
 	stripe            StripeConnectGateway
-	skipTransfers     bool
+	fakeStripe        bool
+	lock              ConnectAccountLock
 	log               Logger
 }
 
 // New constructs the payment application service.
-func New(intents IntentRepository, webhooks WebhookRepository, read PaymentIntentReadRepository, accounts ConnectAccountRepository, releases PaymentReleaseRepository, broker EventBroker, projectionSubject string, stripe StripeConnectGateway, skipTransfers bool, log Logger) (Service, error) {
+func New(intents IntentRepository, webhooks WebhookRepository, read PaymentIntentReadRepository, accounts ConnectAccountRepository, releases PaymentReleaseRepository, broker EventBroker, projectionSubject string, stripe StripeConnectGateway, fakeStripe bool, lock ConnectAccountLock, log Logger) (Service, error) {
 	if intents == nil {
 		return nil, ErrNilIntentRepository
 	}
@@ -55,10 +56,13 @@ func New(intents IntentRepository, webhooks WebhookRepository, read PaymentInten
 	if stripe == nil {
 		return nil, ErrNilStripeConnectGateway
 	}
+	if lock == nil {
+		return nil, ErrNilConnectAccountLock
+	}
 	if log == nil {
 		return nil, ErrNilLogger
 	}
-	return &service{intents: intents, webhooks: webhooks, read: read, accounts: accounts, releases: releases, broker: broker, projectionSubject: projectionSubject, stripe: stripe, skipTransfers: skipTransfers, log: log.With(logging.String("module", "application"))}, nil
+	return &service{intents: intents, webhooks: webhooks, read: read, accounts: accounts, releases: releases, broker: broker, projectionSubject: projectionSubject, stripe: stripe, fakeStripe: fakeStripe, lock: lock, log: log.With(logging.String("module", "application"))}, nil
 }
 
 func (s *service) CreateIntent(ctx context.Context, cmd CreateIntentCommand) (*CreateIntentResult, error) {
@@ -75,6 +79,19 @@ func (s *service) CreateIntent(ctx context.Context, cmd CreateIntentCommand) (*C
 	}
 	if _, err := s.intents.Create(ctx, intent); err != nil {
 		return nil, err
+	}
+	if s.fakeStripe {
+		intent.ProviderIntentID = "pi_fake_" + strings.ReplaceAll(cmd.IntentID, "-", "")
+		intent.CheckoutURL = "http://fake-stripe.local/checkout/" + cmd.IntentID
+		_ = s.intents.UpdateCheckoutURL(ctx, intent.IntentID, intent.CheckoutURL)
+		_ = s.intents.UpdateStatus(ctx, intent.IntentID, domain.PaymentStatusIntentCreated)
+		if created, err := s.intents.GetByID(ctx, intent.IntentID); err == nil {
+			created.CheckoutURL = intent.CheckoutURL
+			created.ProviderIntentID = intent.ProviderIntentID
+			created.Status = domain.PaymentStatusIntentCreated
+			_ = s.read.Upsert(ctx, created)
+		}
+		return &CreateIntentResult{IntentID: cmd.IntentID, SagaID: cmd.SagaID, OrderID: cmd.OrderID, ProviderIntentID: intent.ProviderIntentID, CheckoutURL: intent.CheckoutURL, Status: domain.PaymentStatusIntentCreated, OccurredAt: now.Format(time.RFC3339Nano)}, nil
 	}
 	session, err := checkoutsession.New(&stripe.CheckoutSessionParams{
 		Mode:              stripe.String(string(stripe.CheckoutSessionModePayment)),
@@ -299,6 +316,32 @@ func toPaymentByOrderResult(intent *domain.PaymentIntent) *GetPaymentByOrderResu
 }
 
 func (s *service) StartFreelancerOnboarding(ctx context.Context, cmd StartFreelancerOnboardingCommand) (*StartFreelancerOnboardingResult, error) {
+	release, err := s.lock.Acquire(ctx, cmd.UserID)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	backoffs := []time.Duration{50 * time.Millisecond, 100 * time.Millisecond, 250 * time.Millisecond, 500 * time.Millisecond}
+	for attempt := 0; ; attempt++ {
+		result, err := s.startFreelancerOnboardingOnce(ctx, cmd)
+		if err == nil || !isDeadlockError(err) || attempt >= len(backoffs) {
+			return result, err
+		}
+		timer := time.NewTimer(backoffs[attempt])
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func isDeadlockError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "40P01")
+}
+
+func (s *service) startFreelancerOnboardingOnce(ctx context.Context, cmd StartFreelancerOnboardingCommand) (*StartFreelancerOnboardingResult, error) {
 	log := logging.WithContext(ctx, s.log)
 	userID := cmd.UserID
 	if userID == "" {
@@ -317,6 +360,9 @@ func (s *service) StartFreelancerOnboarding(ctx context.Context, cmd StartFreela
 	}
 	if account != nil {
 		prevStatus = account.Status
+		if account.Status == domain.ConnectStatusCompleted || (account.Status == domain.ConnectStatusPending && account.OnboardingURL != "") {
+			return connectAccountResult(account, now), nil
+		}
 	}
 	if account == nil {
 		account, err = s.stripe.CreateAccount(ctx, cmd)
@@ -369,17 +415,21 @@ func (s *service) StartFreelancerOnboarding(ctx context.Context, cmd StartFreela
 		)
 	}
 
+	return connectAccountResult(persisted, now), nil
+}
+
+func connectAccountResult(account *domain.ConnectAccount, occurredAt time.Time) *StartFreelancerOnboardingResult {
 	return &StartFreelancerOnboardingResult{
-		UserID:           persisted.UserID,
-		StripeAccountID:  persisted.StripeAccountID,
-		OnboardingURL:    persisted.OnboardingURL,
-		Status:           persisted.Status,
-		DetailsSubmitted: persisted.DetailsSubmitted,
-		ChargesEnabled:   persisted.ChargesEnabled,
-		PayoutsEnabled:   persisted.PayoutsEnabled,
-		DisabledReason:   persisted.DisabledReason,
-		OccurredAt:       now.Format(time.RFC3339Nano),
-	}, nil
+		UserID:           account.UserID,
+		StripeAccountID:  account.StripeAccountID,
+		OnboardingURL:    account.OnboardingURL,
+		Status:           account.Status,
+		DetailsSubmitted: account.DetailsSubmitted,
+		ChargesEnabled:   account.ChargesEnabled,
+		PayoutsEnabled:   account.PayoutsEnabled,
+		DisabledReason:   account.DisabledReason,
+		OccurredAt:       occurredAt.Format(time.RFC3339Nano),
+	}
 }
 
 func (s *service) GetConnectStatus(ctx context.Context, userID string) (*GetConnectStatusResult, error) {
@@ -437,6 +487,13 @@ func (s *service) ReleaseFunds(ctx context.Context, cmd ReleaseFundsCommand) (*R
 		SellerUserID:   cmd.SellerUserID,
 		AmountCents:    cmd.AmountCents,
 		Currency:       strings.ToUpper(strings.TrimSpace(cmd.Currency)),
+		// A normally completed order releases the captured amount to the
+		// freelancer in full. Dispute settlement is the only path that uses a
+		// customer/freelancer split.
+		FreelancerPercentage:  100,
+		CustomerPercentage:    0,
+		FreelancerAmountCents: cmd.AmountCents,
+		CustomerAmountCents:   0,
 		IdempotencyKey: strings.TrimSpace(cmd.IdempotencyKey),
 		Status:         domain.PaymentReleaseStatusPending,
 		CreatedAt:      now,
@@ -445,19 +502,6 @@ func (s *service) ReleaseFunds(ctx context.Context, cmd ReleaseFundsCommand) (*R
 	persisted, err := s.releases.Create(ctx, release)
 	if err != nil {
 		return nil, err
-	}
-	if s.skipTransfers {
-		transferID := "sandbox:" + persisted.ReleaseID
-		if err := s.releases.UpdateStatus(ctx, persisted.ReleaseID, domain.PaymentReleaseStatusReleased, transferID, ""); err != nil {
-			return nil, err
-		}
-		return &ReleaseFundsResult{
-			OrderID:          persisted.OrderID,
-			PaymentReleaseID: persisted.ReleaseID,
-			StripeTransferID: transferID,
-			Status:           domain.PaymentReleaseStatusReleased,
-			OccurredAt:       now.Format(time.RFC3339Nano),
-		}, nil
 	}
 	transferID, err := s.stripe.CreateTransfer(ctx, cmd, account.StripeAccountID)
 	if err != nil {
@@ -524,43 +568,36 @@ func (s *service) SettleDispute(ctx context.Context, cmd SettleDisputeCommand) (
 	}
 
 	var transferID, refundID string
-	if s.skipTransfers {
-		transferID = "sandbox:" + persisted.ReleaseID + ":transfer"
-		if customerAmount > 0 {
-			refundID = "sandbox:" + persisted.ReleaseID + ":refund"
-		}
-	} else {
-		account, err := s.accounts.GetByUserID(ctx, cmd.SellerUserID)
+	account, err := s.accounts.GetByUserID(ctx, cmd.SellerUserID)
+	if err != nil {
+		_ = s.releases.UpdateStatus(ctx, persisted.ReleaseID, domain.PaymentReleaseStatusFailed, "", err.Error())
+		return nil, err
+	}
+	if account.Status != domain.ConnectStatusCompleted || !account.PayoutsEnabled {
+		err = errors.New("seller connect account is not ready for payouts")
+		_ = s.releases.UpdateStatus(ctx, persisted.ReleaseID, domain.PaymentReleaseStatusFailed, "", err.Error())
+		return nil, err
+	}
+	if freelancerAmount > 0 {
+		transferID, err = s.stripe.CreateTransfer(ctx, ReleaseFundsCommand{
+			OrderID:        cmd.OrderID,
+			PaymentID:      cmd.PaymentID,
+			SellerUserID:   cmd.SellerUserID,
+			AmountCents:    freelancerAmount,
+			Currency:       cmd.Currency,
+			IdempotencyKey: cmd.IdempotencyKey + ":freelancer",
+			RequestedAt:    cmd.RequestedAt,
+		}, account.StripeAccountID)
 		if err != nil {
 			_ = s.releases.UpdateStatus(ctx, persisted.ReleaseID, domain.PaymentReleaseStatusFailed, "", err.Error())
 			return nil, err
 		}
-		if account.Status != domain.ConnectStatusCompleted || !account.PayoutsEnabled {
-			err = errors.New("seller connect account is not ready for payouts")
-			_ = s.releases.UpdateStatus(ctx, persisted.ReleaseID, domain.PaymentReleaseStatusFailed, "", err.Error())
+	}
+	if customerAmount > 0 {
+		refundID, err = s.stripe.CreateRefund(ctx, cmd.PaymentID, customerAmount, cmd.IdempotencyKey+":customer")
+		if err != nil {
+			_ = s.releases.UpdateStatus(ctx, persisted.ReleaseID, domain.PaymentReleaseStatusFailed, transferID, err.Error())
 			return nil, err
-		}
-		if freelancerAmount > 0 {
-			transferID, err = s.stripe.CreateTransfer(ctx, ReleaseFundsCommand{
-				OrderID:        cmd.OrderID,
-				PaymentID:      cmd.PaymentID,
-				SellerUserID:   cmd.SellerUserID,
-				AmountCents:    freelancerAmount,
-				Currency:       cmd.Currency,
-				IdempotencyKey: cmd.IdempotencyKey + ":freelancer",
-				RequestedAt:    cmd.RequestedAt,
-			}, account.StripeAccountID)
-			if err != nil {
-				_ = s.releases.UpdateStatus(ctx, persisted.ReleaseID, domain.PaymentReleaseStatusFailed, "", err.Error())
-				return nil, err
-			}
-		}
-		if customerAmount > 0 {
-			refundID, err = s.stripe.CreateRefund(ctx, cmd.PaymentID, customerAmount, cmd.IdempotencyKey+":customer")
-			if err != nil {
-				_ = s.releases.UpdateStatus(ctx, persisted.ReleaseID, domain.PaymentReleaseStatusFailed, transferID, err.Error())
-				return nil, err
-			}
 		}
 	}
 

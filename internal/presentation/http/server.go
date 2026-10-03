@@ -32,9 +32,20 @@ func NewServer(svc app.Service, cfg config.HTTPConfig, stripeCfg config.StripeCo
 		return nil, fmt.Errorf("logger is nil")
 	}
 	fapp := fiber.New()
+	fapp.Use(transportLoggingMiddleware(log))
 	s := &server{app: svc, cfg: cfg, stripe: stripeCfg, log: log.With(logging.String("module", "http-webhook")), fapp: fapp}
 	fapp.Post("/v1/payments/webhook", s.handleWebhook)
 	fapp.Post("/v1/freelancer/onboarding/webhook", s.handleConnectWebhook)
+	// Stripe opens these URLs in a browser after a Connect account-link flow.
+	// They are distinct from the signed webhook endpoint: the browser callback
+	// only confirms that the user returned and must never mutate account state.
+	fapp.Get("/v1/freelancer/onboarding/return", s.handleConnectReturn)
+	fapp.Get("/v1/freelancer/onboarding/refresh", s.handleConnectRefresh)
+	if stripeCfg.FakeEnabled {
+		fapp.Post("/v1/fake-stripe/webhooks/payment", s.handleFakePaymentWebhook)
+		fapp.Post("/v1/fake-stripe/webhooks/connect", s.handleFakeConnectWebhook)
+		fapp.Post("/v1/fake-stripe/payment-lifecycle", s.handleFakePaymentLifecycle)
+	}
 	return s, nil
 }
 
